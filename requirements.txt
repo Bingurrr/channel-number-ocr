@@ -1,6 +1,9 @@
-# --- IMPORTANT: version-pinned to match the trained pipeline (Python 3.11) ---
-# GPU paddle must match your CUDA. These are the versions the models were built with:
-paddlepaddle-gpu==3.3.1      # or: paddlepaddle==3.3.1  (CPU)
+# --- IMPORTANT: version-pinned to match the trained pipeline (Python 3.11/3.12) ---
+# paddle 3.x GPU wheels are NOT on PyPI. Install from paddle's index, matching CUDA:
+#   CUDA 12.x: pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+#   CUDA 11.8: pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
+#   CPU only : pip install paddlepaddle==3.3.1
+# (so paddlepaddle-gpu is intentionally NOT listed below — install it separately as above)
 paddleocr==3.4.1
 paddlex==3.4.3
 ultralytics==8.4.104

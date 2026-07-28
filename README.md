@@ -72,7 +72,10 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH   # 또는 conda가 �
 → paddle / paddleocr / paddlex 버전 불일치. 모델이 빌드된 버전으로 맞추세요:
 ```bash
 pip install "paddleocr==3.4.1" "paddlex==3.4.3"
-pip install "paddlepaddle-gpu==3.3.1"   # CUDA 맞춰서 (CPU면 paddlepaddle==3.3.1)
+# paddle 3.x GPU 휠은 PyPI에 없음 → paddle 인덱스에서 CUDA 맞춰 설치:
+nvidia-smi | grep "CUDA Version"
+pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/  # CUDA 12.x
+# CUDA 11.8이면 cu118, CPU면: pip install paddlepaddle==3.3.1
 python check_env.py                      # 버전/모델 확인
 ```
 
