@@ -14,7 +14,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from PIL import Image
+from PIL import Image, ImageFile
+
+# Some captures on disk are truncated/corrupt jpgs. Tolerate them (load the
+# partial image and move on) instead of crashing the whole run on one bad frame.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}

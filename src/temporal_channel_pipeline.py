@@ -15,7 +15,9 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFile
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # tolerate truncated/corrupt jpgs on disk
 
 from channel_number_fusion import (
     digits,

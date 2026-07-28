@@ -6,7 +6,9 @@ import argparse
 import json
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageFile
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True  # tolerate truncated/corrupt jpgs on disk
 
 import sys as _sys
 _sys.path.insert(0,'/home/irteam/teacher_model_v3_for_test/src')
