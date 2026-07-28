@@ -135,7 +135,7 @@ def gt_from_name(stem: str) -> str:
 
 
 def _sel_box(im):
-    """channel_number box that was selected (for drawing)."""
+    """channel_number box selected THIS frame (single-frame inference)."""
     ts = im.get("temporal_selection") or {}
     bc = ts.get("best_candidate") or {}
     if bc.get("bbox_xyxy"):
@@ -147,8 +147,14 @@ def _sel_box(im):
     return None
 
 
+def _locked_box(im):
+    """Accumulated (history-locked) channel_number position, if locked."""
+    st = im.get("temporal_slot_state_after") or im.get("temporal_slot_state_before") or {}
+    return st.get("locked_slot_bbox")
+
+
 def save_qualitative(out, doc, index, meta, truth_by_uid, per_folder_uids,
-                     n_sample, flat, equiv):
+                     n_sample, flat, equiv, viz_history=False):
     """Draw the channel_number box + predicted number. Save up to n_sample
     samples per folder, and ALL failures (pred != truth for that frame).
     `truth_by_uid` = the answer each frame is judged against (folder vote, or
@@ -196,9 +202,24 @@ def save_qualitative(out, doc, index, meta, truth_by_uid, per_folder_uids,
                 continue
             pred = _dg(im.get("predicted_channel_number")) or "(none)"
             ans = truth_by_uid.get(uid, "")
-            box = _sel_box(im)
+            box = _sel_box(im)                                 # 현재 단독 추론
             color = (0, 0, 255) if is_fail else (0, 200, 0)   # BGR: red / green
-            if box:
+            if viz_history:
+                # 현재 단독 = 초록, 누적 잠금 = 주황 (두 위치 비교)
+                lb = _locked_box(im)
+                if lb:
+                    lx1, ly1, lx2, ly2 = [int(round(v)) for v in lb]
+                    cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 165, 255), 2)  # 주황
+                    cv2.putText(img, "accum(history)", (lx1, max(0, ly1 - 6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
+                if box:
+                    x1, y1, x2, y2 = [int(round(v)) for v in box]
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 0), 2)        # 초록
+                    cv2.putText(img, "single", (x1, y2 + 14),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1, cv2.LINE_AA)
+                cv2.putText(img, "green=single  orange=accum", (10, 55),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            elif box:
                 x1, y1, x2, y2 = [int(round(v)) for v in box]
                 cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
             label = f"pred:{pred}" + (f" (ans:{ans})" if is_fail else "")
@@ -229,6 +250,9 @@ def main():
                          "아니라 파일명 정답과 비교. 각 이미지를 독립(단일프레임)으로 처리.")
     ap.add_argument("--numeric-equiv", action="store_true",
                     help="앞자리 0 무시하고 채점 (041 == 41)")
+    ap.add_argument("--viz-history", action="store_true",
+                    help="정성 이미지에 [현재 단독 추론=초록] vs [누적 잠금 위치=주황] 두 박스를 "
+                         "다른 색으로 표시. 누적이 켜진 기본 모드에서만 의미 있음.")
     ap.add_argument("--keep-staged", action="store_true",
                     help="추론 후 로컬 복사본(images/) 유지 (기본은 삭제해 디스크 절약)")
     args = ap.parse_args()
@@ -336,9 +360,13 @@ def main():
           f"({round(tot_ok/tot_n*100,1) if tot_n else 0}%)")
     print(f"\n결과: {out}/per_folder.csv , per_frame.csv , per_folder_success.csv")
 
+    if args.viz_history and args.gt_from_filename:
+        print("[주의] --viz-history는 누적이 켜진 기본 모드용입니다. --gt-from-filename은 "
+              "각 이미지를 단일프레임으로 처리해 누적 잠금이 없어 주황 박스가 안 그려집니다.\n"
+              "        누적 비교를 보려면 --gt-from-filename 빼고 실행하세요.", flush=True)
     if not args.no_qualitative:
         save_qualitative(out, doc, index, meta, truth_by_uid, dict(seqs),
-                         args.samples_per_folder, flat, equiv)
+                         args.samples_per_folder, flat, equiv, viz_history=args.viz_history)
 
     if not args.keep_staged:
         shutil.rmtree(flat, ignore_errors=True)   # 로컬 복사본 삭제 (디스크 절약)
