@@ -4,6 +4,6 @@ paddleocr>=3.0
 paddlepaddle-gpu   # or paddlepaddle (CPU); match your CUDA
 Pillow
 numpy
-opencv-python
+opencv-python-headless
 PyYAML
 scikit-image

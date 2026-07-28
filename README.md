@@ -43,3 +43,27 @@ E2E exact accuracy: random 92.8% / narrow 78.9% / advs 90.6% / **all 88.5%**.
   padded recheck); without it 1-digit accuracy collapses (~10% → ~90%).
 - `config.json` holds all paths; edit `python`/`pipeline_src` for your environment.
 # channel-number-ocr
+
+## Troubleshooting (clone한 새 서버에서)
+
+**`ImportError: libGL.so.1`** — 헤드리스 서버에 그래픽 라이브러리가 없을 때. 둘 중 하나:
+```bash
+# (a) headless OpenCV 사용 (권장, root 불필요)
+pip uninstall -y opencv-python
+pip install opencv-python-headless
+
+# (b) 시스템 라이브러리 설치 (root면)
+apt-get update && apt-get install -y libgl1 libglib2.0-0
+```
+
+**`ModuleNotFoundError: No module named 'ocr_candidate_extractor'`** (또는 다른 src 모듈)
+→ 최신 버전을 다시 받으세요: `git pull` (누락 의존 모듈이 src/에 포함됨).
+
+**paddle `libgomp.so.1` 없음**
+```bash
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH   # 또는 conda가 설치된 lib 경로
+```
+
+**config.json** — 배포 기본은 패키지 상대경로입니다. 다른 위치의 모델을 쓰려면
+`detector` / `numeric_ocr` / `selector_dir` / `pipeline_src` 경로를 절대경로로 바꾸세요.
+`python`은 사용하는 파이썬(예: `.venv/bin/python`)으로.
