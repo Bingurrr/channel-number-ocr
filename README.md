@@ -42,3 +42,4 @@ E2E exact accuracy: random 92.8% / narrow 78.9% / advs 90.6% / **all 88.5%**.
 - The numeric OCR requires 3:1 aspect padding on short numbers (baked into the
   padded recheck); without it 1-digit accuracy collapses (~10% → ~90%).
 - `config.json` holds all paths; edit `python`/`pipeline_src` for your environment.
+# channel-number-ocr
