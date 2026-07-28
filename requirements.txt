@@ -7,6 +7,10 @@
 paddleocr==3.4.1
 paddlex==3.4.3
 ultralytics==8.4.104
+# torch must match nccl 2.25.1 that paddle pulls in. Proven combo: torch 2.7.1+cu126.
+# NEWER torch (e.g. 2.13) needs a newer nccl symbol (ncclCommResume) and crashes.
+# Install from pytorch index (NOT plain PyPI):
+#   pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cu126
 opencv-python-headless
 Pillow
 numpy
