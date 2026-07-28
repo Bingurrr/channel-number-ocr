@@ -247,7 +247,10 @@ def main():
                     help="정성 이미지 저장 안 함 (CSV만)")
     ap.add_argument("--gt-from-filename", action="store_true",
                     help="파일명이 정답 채널번호 (150.jpg->150). 성공/실패를 폴더 다수결이 "
-                         "아니라 파일명 정답과 비교. 각 이미지를 독립(단일프레임)으로 처리.")
+                         "아니라 파일명 정답과 비교. 기본은 각 이미지를 독립(단일프레임)으로 처리.")
+    ap.add_argument("--accumulate", action="store_true",
+                    help="폴더 프레임을 한 시퀀스로 보고 위치 누적/잠금을 켬. --gt-from-filename과 "
+                         "함께 쓰면: 정답은 파일명(프레임별) + 위치는 누적. 연속 프레임 데이터에서만 의미.")
     ap.add_argument("--numeric-equiv", action="store_true",
                     help="앞자리 0 무시하고 채점 (041 == 41)")
     ap.add_argument("--viz-history", action="store_true",
@@ -274,14 +277,20 @@ def main():
     # ground-truth per frame: filename digits (GT mode) — else filled after voting
     gt_name = {uid: gt_from_name(stem) for uid, stem in meta.items()}
     manifest = out / "manifest.json"
-    if args.gt_from_filename:
-        # each image independent (filenames carry different channels) -> no accumulation
+    accumulate = args.accumulate or not args.gt_from_filename   # 기본모드는 항상 누적
+    if accumulate:
+        # 폴더 프레임을 한 시퀀스로 -> 위치 누적/잠금 발동
+        sequences = [{"sequence_id": g.replace('/', '__'), "group_key": g,
+                      "images": sorted(v)} for g, v in sorted(seqs.items())]
+        if args.gt_from_filename:
+            print("[mode] 파일명=정답 + 누적 ON (폴더 시퀀스, 값은 프레임별로 채점)", flush=True)
+        else:
+            print("[mode] 누적 ON (폴더 시퀀스, 성공=폴더 다수결)", flush=True)
+    else:
+        # 각 이미지 독립 (파일명마다 채널 다른 낱장) -> 누적 off
         sequences = [{"sequence_id": uid, "group_key": index[uid], "images": [uid]}
                      for uid in sorted(index)]
         print("[mode] 파일명=정답: 각 이미지 단일프레임 처리 (누적 off)", flush=True)
-    else:
-        sequences = [{"sequence_id": g.replace('/', '__'), "group_key": g,
-                      "images": sorted(v)} for g, v in sorted(seqs.items())]
     manifest.write_text(json.dumps(
         {"sequence_count": len(sequences), "sequences": sequences}, ensure_ascii=False))
 
@@ -360,10 +369,9 @@ def main():
           f"({round(tot_ok/tot_n*100,1) if tot_n else 0}%)")
     print(f"\n결과: {out}/per_folder.csv , per_frame.csv , per_folder_success.csv")
 
-    if args.viz_history and args.gt_from_filename:
-        print("[주의] --viz-history는 누적이 켜진 기본 모드용입니다. --gt-from-filename은 "
-              "각 이미지를 단일프레임으로 처리해 누적 잠금이 없어 주황 박스가 안 그려집니다.\n"
-              "        누적 비교를 보려면 --gt-from-filename 빼고 실행하세요.", flush=True)
+    if args.viz_history and args.gt_from_filename and not args.accumulate:
+        print("[주의] --viz-history인데 누적이 꺼져 있습니다(--gt-from-filename 단일프레임). "
+              "주황(누적) 박스를 보려면 --accumulate 를 추가하세요.", flush=True)
     if not args.no_qualitative:
         save_qualitative(out, doc, index, meta, truth_by_uid, dict(seqs),
                          args.samples_per_folder, flat, equiv, viz_history=args.viz_history)
