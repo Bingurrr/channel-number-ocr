@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -30,6 +31,12 @@ IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 def digits(x) -> str:
     return "".join(c for c in str(x or "") if c.isdigit())
+
+
+def gt_from_stem(stem: str) -> str:
+    """Leading digits of the original frame filename = ground truth (123.jpg -> 123)."""
+    m = re.match(r"\s*(\d+)", str(stem))
+    return m.group(1) if m else ""
 
 
 def selected_bbox(item):
@@ -73,6 +80,9 @@ def main():
     ap.add_argument("--result", required=True, help="predict_folder.py --out dir")
     ap.add_argument("--out", required=True, help="where to write qualitative images")
     ap.add_argument("--labels", default=None, help="optional folder->gt JSON")
+    ap.add_argument("--gt-from-name", action="store_true",
+                    help="ground truth = leading digits of each frame's filename "
+                         "(123.jpg -> gt 123). No labels file needed.")
     ap.add_argument("--numeric-equiv", action="store_true",
                     help="ignore leading zeros when scoring (041 == 41)")
     args = ap.parse_args()
@@ -84,17 +94,18 @@ def main():
     if args.labels:
         gt_map = json.loads(Path(args.labels).read_text())
 
-    # uid -> folder relpath.  predict_folder builds uid = "<folder>__<stem>" with
-    # "/"->"__"; recover the folder from per_frame.csv (has folder + frame) if present.
-    uid_folder = {}
+    # uid -> (folder relpath, original frame stem). predict_folder builds
+    # uid = "<folder>__<stem>" with "/"->"__"; per_frame.csv (folder, frame) lets
+    # us recover both exactly. Fallback: split the uid on the last "__".
+    uid_folder, uid_stem = {}, {}
     pf = result / "per_frame.csv"
     if pf.exists():
         import csv
         with pf.open(encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
-                # reconstruct uid the way predict_folder did
                 uid = f"{r['folder']}__{r['frame']}".replace("/", "__").replace(" ", "_")
                 uid_folder[uid] = r["folder"]
+                uid_stem[uid] = r["frame"]
 
     def norm(s):
         return str(int(s)) if (args.numeric_equiv and digits(s)) else digits(s)
@@ -112,7 +123,13 @@ def main():
         f_ok = f_tot = 0
         for uid, item in by_folder[folder]:
             pred = digits(item.get("predicted_channel_number"))
-            gt = gt_map.get(folder) if gt_map else None
+            if args.gt_from_name:                       # per-frame GT from filename
+                stem = uid_stem.get(uid) or uid.rsplit("__", 1)[-1]
+                gt = gt_from_stem(stem)
+            elif gt_map:                                # per-folder GT from labels file
+                gt = gt_map.get(folder)
+            else:
+                gt = None
             img = find_image(images_dir, uid)
             if img is None:
                 n_noimg += 1
@@ -131,9 +148,10 @@ def main():
                 dst = out / "all" / folder / f"{uid}__pred{pred or 'none'}.jpg"
             if draw(img, bbox, pred, gt, dst):
                 n_all += 1
-        if gt_map:
-            gt = gt_map.get(folder)
-            print(f"  [{folder}] gt={gt}  정확도 {round(f_ok/f_tot*100,1) if f_tot else '-'}%  "
+        scoring = args.gt_from_name or bool(gt_map)
+        if scoring:
+            extra = f"gt={gt_map.get(folder)}  " if gt_map else ""   # per-folder GT case
+            print(f"  [{folder}] {extra}정확도 {round(f_ok/f_tot*100,1) if f_tot else '-'}%  "
                   f"({f_ok}/{f_tot})", flush=True)
         else:
             # no GT: show the majority-vote prediction for the folder
@@ -142,10 +160,11 @@ def main():
             best = Counter(preds).most_common(1)[0][0] if preds else "-"
             print(f"  [{folder}] 예측 채널번호(다수결)={best}  ({len(by_folder[folder])}프레임)", flush=True)
 
+    scoring = args.gt_from_name or bool(gt_map)
     print(f"\n정성이미지 저장: {n_all}장 -> {out}")
     if n_noimg:
         print(f"  (이미지 못 찾음 {n_noimg}장 — 원본 심링크 확인)")
-    if gt_map:
+    if scoring:
         acc = out / "per_folder_accuracy.csv"
         import csv
         with acc.open("w", newline="", encoding="utf-8-sig") as f:
