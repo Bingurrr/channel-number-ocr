@@ -73,28 +73,26 @@ def main():
     env["LD_LIBRARY_PATH"] = "/opt/conda/lib:" + env.get("LD_LIBRARY_PATH", "")
     env["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
-    # 1) collect images + filename GT, symlink flat (unique stems), single-frame manifest
+    # 1) collect images recursively + filename GT; unique uid per image (folder path
+    #    embedded so duplicate 001.jpg across folders don't collide); single-frame seqs
     flat = out / "images"
     flat.mkdir(parents=True, exist_ok=True)
-    index, gt, seqs, seen = {}, {}, [], {}
-    roots = [p for p in root.iterdir() if p.is_dir()] or [root]
-    for sub in sorted(roots):
-        for img in sorted(sub.iterdir()):
-            if img.suffix.lower() not in IMG_EXTS:
-                continue
-            stem = img.stem
-            if stem in seen:
-                raise SystemExit(f"Duplicate image stem '{stem}'. Frame names must "
-                                 "be globally unique across folders.")
-            seen[stem] = True
-            link = flat / img.name
-            if link.exists() or link.is_symlink():
-                link.unlink()
-            os.symlink(img.resolve(), link)
-            group = sub.name if sub != root else "(root)"
-            index[stem] = group
-            gt[stem] = gt_from_name(stem)
-            seqs.append({"sequence_id": stem, "group_key": group, "images": [stem]})
+    index, gt, seqs, used = {}, {}, [], {}
+    for img in sorted(root.rglob("*")):
+        if not (img.is_file() and img.suffix.lower() in IMG_EXTS):
+            continue
+        group = str(img.parent.relative_to(root)) or "(root)"
+        uid = f"{group}__{img.stem}".replace("/", "__").replace(" ", "_")
+        while uid in used:
+            uid += "_x"
+        used[uid] = True
+        link = flat / f"{uid}{img.suffix.lower()}"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        os.symlink(img.resolve(), link)
+        index[uid] = group
+        gt[uid] = gt_from_name(img.stem)          # GT from ORIGINAL filename
+        seqs.append({"sequence_id": uid, "group_key": group, "images": [uid]})
     manifest = out / "manifest.json"
     manifest.write_text(json.dumps({"sequence_count": len(seqs), "sequences": seqs},
                                    ensure_ascii=False))

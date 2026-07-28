@@ -67,3 +67,20 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH   # 또는 conda가 �
 **config.json** — 배포 기본은 패키지 상대경로입니다. 다른 위치의 모델을 쓰려면
 `detector` / `numeric_ocr` / `selector_dir` / `pipeline_src` 경로를 절대경로로 바꾸세요.
 `python`은 사용하는 파이썬(예: `.venv/bin/python`)으로.
+
+**`AttributeError: 'AnalysisConfig' object has no attribute 'set_optimization_level'`**
+→ paddle / paddleocr / paddlex 버전 불일치. 모델이 빌드된 버전으로 맞추세요:
+```bash
+pip install "paddleocr==3.4.1" "paddlex==3.4.3"
+pip install "paddlepaddle-gpu==3.3.1"   # CUDA 맞춰서 (CPU면 paddlepaddle==3.3.1)
+python check_env.py                      # 버전/모델 확인
+```
+
+**`image_count: 0`** → 이미지를 못 찾음. predict_folder/predict_eval은 이제
+하위 폴더를 **재귀 탐색**하므로 상위 폴더를 `--root`로 줘도 됩니다. 그래도 0이면
+경로/확장자(.jpg 등) 확인.
+
+## 파일명이 프레임 번호일 때 (001.jpg, 002.jpg ...)
+이 경우 파일명은 정답 채널번호가 아니라 프레임 순번입니다.
+- 예측만 필요 → `predict_folder.py` (폴더별 채널번호 다수결)
+- 정답 채점 필요 → 정답이 `_banner_labels.json` 같은 라벨 파일에 있으면 별도 매핑 필요

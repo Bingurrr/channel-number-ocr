@@ -1,9 +1,11 @@
-# Install a CUDA-matched build separately, then:
+# --- IMPORTANT: version-pinned to match the trained pipeline (Python 3.11) ---
+# GPU paddle must match your CUDA. These are the versions the models were built with:
+paddlepaddle-gpu==3.3.1      # or: paddlepaddle==3.3.1  (CPU)
+paddleocr==3.4.1
+paddlex==3.4.3
 ultralytics==8.4.104
-paddleocr>=3.0
-paddlepaddle-gpu   # or paddlepaddle (CPU); match your CUDA
+opencv-python-headless
 Pillow
 numpy
-opencv-python-headless
 PyYAML
 scikit-image
