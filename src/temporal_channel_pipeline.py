@@ -829,6 +829,12 @@ def main() -> None:
     )
     parser.add_argument("--min-seen", type=int, default=3)
     parser.add_argument("--stable-score", type=float, default=0.68)
+    parser.add_argument("--smooth-alpha", type=float, default=0.35,
+                        help="ROI position EMA weight. Lower = averages MORE past frames.")
+    parser.add_argument("--warmup-frames", type=int, default=8,
+                        help="frames over which a track establishes persistence")
+    parser.add_argument("--max-missed", type=int, default=12,
+                        help="drop a track after this many consecutive missed frames")
     parser.add_argument("--history-bonus-scale", type=float, default=1.0)
     parser.add_argument("--lock-min-history-score", type=float, default=0.20)
     parser.add_argument("--history-min-lock-observations", type=int, default=3)
@@ -1017,7 +1023,10 @@ def main() -> None:
 
     global_frame_index = 0
     for sequence_id, group_key, sequence_images in sequences:
-        tracker = RoiHistoryTracker(min_seen=args.min_seen, stable_score=args.stable_score)
+        tracker = RoiHistoryTracker(min_seen=args.min_seen, stable_score=args.stable_score,
+                                    smooth_alpha=args.smooth_alpha,
+                                    warmup_frames=args.warmup_frames,
+                                    max_missed=args.max_missed)
         slot_state = TemporalSlotState()
         for sequence_frame_index, raw_image in enumerate(sequence_images, 1):
             global_frame_index += 1

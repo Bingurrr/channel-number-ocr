@@ -86,9 +86,16 @@ def sh(cmd, env):
     return subprocess.call([str(c) for c in cmd], env=env)
 
 
-def run_pipeline(cfg, flat, out, manifest, device, batch, env):
+def run_pipeline(cfg, flat, out, manifest, device, batch, env, accum_frames=None):
     PY, SRC = cfg["python"], cfg["pipeline_src"]
     sel = Path(cfg["selector_dir"])
+    # translate "N frames to accumulate" -> EMA span: alpha = 2/(N+1); warm up over N
+    accum_args = []
+    if accum_frames and accum_frames > 0:
+        alpha = round(2.0 / (accum_frames + 1), 4)
+        accum_args = ["--smooth-alpha", str(alpha),
+                      "--warmup-frames", str(accum_frames),
+                      "--min-seen", str(max(2, min(3, accum_frames)))]
     steps = [
         [PY, f"{SRC}/export_recursive_detector_predictions.py", "--model", cfg["detector"],
          "--images-dir", flat, "--output-dir", out / "detector", "--imgsz", cfg["imgsz"],
@@ -115,7 +122,7 @@ def run_pipeline(cfg, flat, out, manifest, device, batch, env):
          "--value-group-ranker-model", sel / "value_group_pointwise_logistic.json",
          "--relative-gate-model", sel / "relative_confidence_gate.json",
          "--relative-gate-threshold", 0.7690914017301402,
-         "--relative-gate-policy", "positive_first"],
+         "--relative-gate-policy", "positive_first", *accum_args],
     ]
     for cmd in steps:
         rc = sh(cmd, env)
@@ -203,24 +210,38 @@ def save_qualitative(dir_for, doc, index, meta, truth_by_uid, per_folder_uids,
             ans = truth_by_uid.get(uid, "")
             box = _sel_box(im)                                 # 현재 단독 추론
             color = (0, 0, 255) if is_fail else (0, 200, 0)   # BGR: red / green
+            TH = 3                                             # 박스 두께 (굵게)
+            if is_fail:
+                # 실패 케이스: YOLO가 검출한 모든 박스를 시각화 (원인 파악용)
+                for yb in (im.get("yolo_channel_boxes") or []):
+                    bb = yb.get("bbox_xyxy")
+                    if not bb:
+                        continue
+                    yx1, yy1, yx2, yy2 = [int(round(v)) for v in bb]
+                    ch = yb.get("class_id") in (0, 3)
+                    c = (0, 200, 0) if ch else (0, 220, 220)   # 채널=초록, 나머지=노랑
+                    cv2.rectangle(img, (yx1, yy1), (yx2, yy2), c, TH if ch else 2)
+                    cv2.putText(img, f"{yb.get('class_name','')}:{yb.get('conf',0):.2f}",
+                                (yx1, max(0, yy1 - 4)), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.4, c, 1, cv2.LINE_AA)
             if viz_history:
                 # 현재 단독 = 초록, 누적 잠금 = 주황 (두 위치 비교)
                 lb = _locked_box(im)
                 if lb:
                     lx1, ly1, lx2, ly2 = [int(round(v)) for v in lb]
-                    cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 165, 255), 2)  # 주황
+                    cv2.rectangle(img, (lx1, ly1), (lx2, ly2), (0, 165, 255), TH)  # 주황
                     cv2.putText(img, "accum(history)", (lx1, max(0, ly1 - 6)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
                 if box:
                     x1, y1, x2, y2 = [int(round(v)) for v in box]
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 0), 2)        # 초록
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 200, 0), TH)        # 초록
                     cv2.putText(img, "single", (x1, y2 + 14),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1, cv2.LINE_AA)
                 cv2.putText(img, "green=single  orange=accum", (10, 55),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
             elif box:
                 x1, y1, x2, y2 = [int(round(v)) for v in box]
-                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, TH)
             label = f"pred:{pred}"
             if is_fail and ans and not no_label:
                 label += f" (ans:{ans})"
@@ -254,6 +275,9 @@ def main():
     ap.add_argument("--accumulate", action="store_true",
                     help="폴더 프레임을 한 시퀀스로 보고 위치 누적/잠금을 켬. --gt-from-filename과 "
                          "함께 쓰면: 정답은 파일명(프레임별) + 위치는 누적. 연속 프레임 데이터에서만 의미.")
+    ap.add_argument("--accum-frames", type=int, default=None,
+                    help="누적에 반영할 프레임 수(대략). 클수록 더 많은 과거 프레임을 평균(안정적, "
+                         "느린 반응), 작을수록 최근 위주(빠른 반응). 기본 미지정=내부값(약 5프레임 상당).")
     ap.add_argument("--numeric-equiv", action="store_true",
                     help="앞자리 0 무시하고 채점 (041 == 41)")
     ap.add_argument("--viz-history", action="store_true",
@@ -303,7 +327,11 @@ def main():
     manifest.write_text(json.dumps(
         {"sequence_count": len(sequences), "sequences": sequences}, ensure_ascii=False))
 
-    run_pipeline(cfg, flat, out, manifest, args.device, args.batch, env)
+    if args.accum_frames:
+        print(f"[accum] 누적 프레임 수 ≈ {args.accum_frames} "
+              f"(alpha={round(2.0/(args.accum_frames+1),4)})", flush=True)
+    run_pipeline(cfg, flat, out, manifest, args.device, args.batch, env,
+                 accum_frames=args.accum_frames)
 
     doc = json.loads((out / "predictions.json").read_text())
     per_frame, per_folder = [], defaultdict(list)
