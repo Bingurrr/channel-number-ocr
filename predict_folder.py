@@ -153,23 +153,22 @@ def _locked_box(im):
     return st.get("locked_slot_bbox")
 
 
-def save_qualitative(out, doc, index, meta, truth_by_uid, per_folder_uids,
-                     n_sample, flat, equiv, viz_history=False):
+def save_qualitative(dir_for, doc, index, meta, truth_by_uid, per_folder_uids,
+                     n_sample, flat, equiv, viz_history=False, no_label=False):
     """Draw the channel_number box + predicted number. Save up to n_sample
-    samples per folder, and ALL failures (pred != truth for that frame).
-    `truth_by_uid` = the answer each frame is judged against (folder vote, or
-    the filename GT in --gt-from-filename mode)."""
+    samples per folder, and ALL failures. `truth_by_uid` = the answer each frame
+    is judged against; empty in --no-label mode (then failure = frame with no
+    prediction at all). `dir_for(folder)` returns that folder's output dir."""
     try:
         import cv2
     except Exception as e:
         print(f"[qualitative] cv2 없음 → 이미지 저장 건너뜀 ({e})", flush=True)
         return
     norm = (lambda s: str(int(s)) if s else "") if equiv else (lambda s: s)
-    qdir = out / "qualitative"
     by_uid = {im["image_id"]: im for im in doc["images"]}
     saved = 0
     for folder, uids in sorted(per_folder_uids.items()):
-        fdir = qdir / folder.replace("/", "__")
+        fdir = dir_for(folder)
         faildir = fdir / "_failures"
         # classify frames: failure = empty pred OR pred != that frame's truth
         fails, oks = [], []
@@ -222,13 +221,17 @@ def save_qualitative(out, doc, index, meta, truth_by_uid, per_folder_uids,
             elif box:
                 x1, y1, x2, y2 = [int(round(v)) for v in box]
                 cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-            label = f"pred:{pred}" + (f" (ans:{ans})" if is_fail else "")
+            label = f"pred:{pred}"
+            if is_fail and ans and not no_label:
+                label += f" (ans:{ans})"
+            elif is_fail and no_label:
+                label += " (unread)"
             cv2.putText(img, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
                         color, 2, cv2.LINE_AA)
             dst = (faildir if is_fail else fdir) / f"{meta.get(uid, uid)}.jpg"
             cv2.imwrite(str(dst), img)
             saved += 1
-    print(f"\n정성 이미지 저장: {saved}장  →  {qdir}", flush=True)
+    print(f"\n정성 이미지 저장: {saved}장", flush=True)
     print("  (폴더별 샘플 + _failures/ 에 실패 프레임 전부)", flush=True)
 
 
@@ -258,6 +261,12 @@ def main():
                          "다른 색으로 표시. 누적이 켜진 기본 모드에서만 의미 있음.")
     ap.add_argument("--keep-staged", action="store_true",
                     help="추론 후 로컬 복사본(images/) 유지 (기본은 삭제해 디스크 절약)")
+    ap.add_argument("--split-output", action="store_true",
+                    help="--out 아래에 UI별(사진 바로 상위 폴더 이름) 하위폴더를 만들어 "
+                         "정성/정량 결과를 각각 저장.")
+    ap.add_argument("--no-label", action="store_true",
+                    help="정답 라벨이 없는 데이터. accuracy 대신 최종 OCR 결과(폴더별 예측 "
+                         "채널번호)만 저장. 파일명도 정답이 아닐 때 사용.")
     args = ap.parse_args()
     cfg = load_config()
     root, out = Path(args.root).resolve(), Path(args.out).resolve()
@@ -320,61 +329,113 @@ def main():
         w = csv.DictWriter(f, fieldnames=["folder", "channel_number", "confidence", "n_frames"])
         w.writeheader(); w.writerows(folder_rows)
 
-    # what each frame is judged against:
-    #   GT mode  -> the frame's own filename digits
-    #   default  -> its folder's majority vote
-    equiv = args.numeric_equiv or args.gt_from_filename   # 150.jpg vs 0150 등 관대하게
+    # ---- what each frame is judged against ----
+    #   --no-label        -> no GT (save predictions only, report read-rate/consistency)
+    #   --gt-from-filename -> the frame's own filename digits
+    #   default           -> its folder's majority vote
+    equiv = args.numeric_equiv or args.gt_from_filename
     norm = (lambda s: str(int(s)) if s else "") if equiv else (lambda s: s)
-    if args.gt_from_filename:
+    if args.no_label:
+        truth_by_uid = {}
+    elif args.gt_from_filename:
         truth_by_uid = dict(gt_name)
-        basis = "파일명 정답"
     else:
         truth_by_uid = {uid: folder_vote.get(index.get(uid, ""), "") for uid in index}
-        basis = "폴더 다수결"
 
     frames_by_folder = defaultdict(list)   # folder -> [(uid, pred)]
     for im in doc["images"]:
         uid = im["image_id"]
         frames_by_folder[index.get(uid, "")].append((uid, _dg(im.get("predicted_channel_number"))))
-    ratio_rows, tot_ok, tot_n = [], 0, 0
-    for folder in sorted(frames_by_folder):
-        ok = fail = 0
-        for uid, pred in frames_by_folder[folder]:
-            ans = truth_by_uid.get(uid, "")
-            if not ans:
-                continue
-            if norm(pred) == norm(ans):
-                ok += 1
-            else:
-                fail += 1
-        n = ok + fail
-        rate = round(ok / n * 100, 1) if n else 0.0
-        ratio_rows.append({"folder": folder, "total": n, "success": ok,
-                           "fail": fail, "success_rate(%)": rate})
-        tot_ok += ok; tot_n += n
-    with (out / "per_folder_success.csv").open("w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=["folder", "total", "success", "fail", "success_rate(%)"])
-        w.writeheader(); w.writerows(ratio_rows)
 
-    if not args.gt_from_filename:
-        print("\n=== 폴더별 채널번호 (프레임 다수결) ===")
-        for r in folder_rows:
-            print(f"  {r['folder']}: {r['channel_number']}  (conf {r['confidence']}, {r['n_frames']}프레임)")
-    print(f"\n=== 폴더별 성공/실패 비율 (성공 = {basis}과 일치) ===")
-    for r in ratio_rows:
-        print(f"  {r['folder']:<40} 성공 {r['success']}/{r['total']}  실패 {r['fail']}  "
-              f"({r['success_rate(%)']}%)")
-    print(f"  {'-'*40}")
-    print(f"  {'전체':<40} 성공 {tot_ok}/{tot_n}  "
-          f"({round(tot_ok/tot_n*100,1) if tot_n else 0}%)")
-    print(f"\n결과: {out}/per_folder.csv , per_frame.csv , per_folder_success.csv")
+    # ---- per-folder quantitative summary ----
+    summaries, tot_ok, tot_n = {}, 0, 0
+    for folder in sorted(frames_by_folder):
+        frames = frames_by_folder[folder]
+        n = len(frames)
+        n_read = sum(1 for _, p in frames if p)
+        vote = folder_vote.get(folder, "")
+        s = {"folder": folder, "predicted_channel_number": vote, "n_frames": n,
+             "n_read": n_read, "read_rate(%)": round(n_read / n * 100, 1) if n else 0.0}
+        if args.no_label:
+            cons = sum(1 for _, p in frames if p and norm(p) == norm(vote))
+            s["accuracy(%)"] = None
+            s["consistency(%)"] = round(cons / n_read * 100, 1) if n_read else 0.0
+            s["has_label"] = False
+        else:
+            ok = sum(1 for uid, p in frames if truth_by_uid.get(uid) and norm(p) == norm(truth_by_uid[uid]))
+            tot = sum(1 for uid, _ in frames if truth_by_uid.get(uid))
+            s["accuracy(%)"] = round(ok / tot * 100, 1) if tot else None
+            s["scored"] = tot; s["success"] = ok; s["fail"] = tot - ok
+            s["has_label"] = True
+            tot_ok += ok; tot_n += tot
+        summaries[folder] = s
+
+    def safe(name):
+        return (name.replace("/", "__").replace(" ", "_")) or root.name
+
+    # immediate-parent-folder name per group (사진들 바로 상위 폴더 이름), dedup collisions
+    gname_of, used_names = {}, {}
+    for folder in sorted(summaries):
+        base = Path(folder).name if folder not in ("", "(root)") else root.name
+        name = safe(base)
+        while name in used_names and used_names[name] != folder:
+            name += "_x"
+        used_names[name] = folder
+        gname_of[folder] = name
+
+    # combined outputs
+    (out / "summary.json").write_text(json.dumps(
+        {"folders": list(summaries.values()),
+         "overall_accuracy(%)": (round(tot_ok / tot_n * 100, 1)
+                                 if (tot_n and not args.no_label) else None),
+         "has_label": not args.no_label}, ensure_ascii=False, indent=2))
+    fields = ["folder", "predicted_channel_number", "n_frames", "n_read",
+              "read_rate(%)", "accuracy(%)"] + (
+                  ["consistency(%)"] if args.no_label else ["scored", "success", "fail"])
+    with (out / "per_folder_summary.csv").open("w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader(); w.writerows(summaries.values())
+
+    # per-UI split output: --out/<UI 이름>/{summary.json, per_frame.csv, qualitative/}
+    if args.split_output:
+        for folder, s in summaries.items():
+            gdir = out / gname_of[folder]
+            gdir.mkdir(parents=True, exist_ok=True)
+            (gdir / "summary.json").write_text(json.dumps(s, ensure_ascii=False, indent=2))
+            with (gdir / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, fieldnames=["frame", "prediction"])
+                w.writeheader()
+                for uid, p in frames_by_folder[folder]:
+                    w.writerow({"frame": meta.get(uid, uid), "prediction": p})
+
+    # ---- terminal report ----
+    print("\n=== 폴더별 결과 ===")
+    for folder, s in summaries.items():
+        if args.no_label:
+            print(f"  {folder:<38} 채널={str(s['predicted_channel_number']):<5} "
+                  f"읽음 {s['n_read']}/{s['n_frames']}({s['read_rate(%)']}%)  "
+                  f"일관성 {s['consistency(%)']}%")
+        else:
+            print(f"  {folder:<38} 채널={str(s['predicted_channel_number']):<5} "
+                  f"정확도 {s['accuracy(%)']}% (성공 {s['success']}/{s['scored']})")
+    if args.no_label:
+        print("  ※ 라벨 없음 → 정확도 대신 [예측 채널번호 / 읽음율 / 일관성]만 저장")
+    elif tot_n:
+        print(f"  {'-'*38}\n  전체 정확도 {round(tot_ok/tot_n*100,1)}% ({tot_ok}/{tot_n})")
+    print(f"\n결과: {out}/summary.json , per_folder_summary.csv , per_frame.csv"
+          + ("  (+ UI별 하위폴더)" if args.split_output else ""))
 
     if args.viz_history and args.gt_from_filename and not args.accumulate:
         print("[주의] --viz-history인데 누적이 꺼져 있습니다(--gt-from-filename 단일프레임). "
               "주황(누적) 박스를 보려면 --accumulate 를 추가하세요.", flush=True)
     if not args.no_qualitative:
-        save_qualitative(out, doc, index, meta, truth_by_uid, dict(seqs),
-                         args.samples_per_folder, flat, equiv, viz_history=args.viz_history)
+        if args.split_output:
+            dir_for = lambda folder: out / gname_of[folder] / "qualitative"
+        else:
+            dir_for = lambda folder: out / "qualitative" / safe(folder)
+        save_qualitative(dir_for, doc, index, meta, truth_by_uid, dict(seqs),
+                         args.samples_per_folder, flat, equiv,
+                         viz_history=args.viz_history, no_label=args.no_label)
 
     if not args.keep_staged:
         shutil.rmtree(flat, ignore_errors=True)   # 로컬 복사본 삭제 (디스크 절약)
