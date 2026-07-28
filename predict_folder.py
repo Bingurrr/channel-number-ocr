@@ -70,7 +70,8 @@ def collect(root: Path, flat: Path, symlink: bool):
         if symlink:
             os.symlink(img.resolve(), link)
         else:
-            shutil.copy2(img, link)             # read remote ONCE, sequentially
+            shutil.copyfile(img, link)          # content only (rclone has no xattr);
+                                                # read remote ONCE, sequentially
             if i % 500 == 0 or i == n:
                 print(f"  staged {i}/{n} to local disk", flush=True)
         index[uid] = group
