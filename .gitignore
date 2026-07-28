@@ -1,0 +1,13 @@
+# data & outputs (never commit)
+data/
+datasets/
+*.jpg
+*.jpeg
+*.png
+outputs/
+out/
+runs/
+__pycache__/
+*.pyc
+.venv/
+*.log

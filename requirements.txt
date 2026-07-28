@@ -1,0 +1,9 @@
+# Install a CUDA-matched build separately, then:
+ultralytics==8.4.104
+paddleocr>=3.0
+paddlepaddle-gpu   # or paddlepaddle (CPU); match your CUDA
+Pillow
+numpy
+opencv-python
+PyYAML
+scikit-image

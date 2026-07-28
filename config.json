@@ -1,0 +1,10 @@
+{
+  "python": "python",
+  "pipeline_src": "src",
+  "detector": "models/detector/best.pt",
+  "numeric_ocr": "models/numeric_ocr",
+  "selector_dir": "models/selector",
+  "full_image_ocr": "models/full_image_ocr",
+  "imgsz": 960,
+  "recheck_padded": "src/paddleocr_channel_recheck_padded.py"
+}
