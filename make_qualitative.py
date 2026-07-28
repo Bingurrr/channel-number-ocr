@@ -101,47 +101,71 @@ def main():
 
     n_all = n_ok = n_fail = n_noimg = 0
     per_folder = defaultdict(lambda: [0, 0])   # folder -> [ok, total]
+    # group prediction records by folder so we can log one line per folder
+    by_folder = defaultdict(list)
     for item in doc["images"]:
         uid = str(item.get("image_id", ""))
-        pred = digits(item.get("predicted_channel_number"))
         folder = uid_folder.get(uid) or uid.rsplit("__", 1)[0]
-        gt = gt_map.get(folder) if gt_map else None
-        img = find_image(images_dir, uid)
-        if img is None:
-            n_noimg += 1
-            continue
-        bbox = selected_bbox(item)
-        if gt is not None:
-            ok = gt != "" and norm(pred) == norm(gt)
-            sub = "success" if ok else "fail"
-            tag = "ok" if ok else "ng"
-            name = f"{uid}__gt{gt}__pred{pred or 'none'}__{tag}.jpg"
-            dst = out / sub / folder / name
-            per_folder[folder][0] += int(ok)
-            per_folder[folder][1] += 1
-            n_ok += int(ok); n_fail += int(not ok)
-        else:
-            dst = out / "all" / folder / f"{uid}__pred{pred or 'none'}.jpg"
-        if draw(img, bbox, pred, gt, dst):
-            n_all += 1
+        by_folder[folder].append((uid, item))
 
-    print(f"정성이미지 저장: {n_all}장 -> {out}")
+    for folder in sorted(by_folder):
+        f_ok = f_tot = 0
+        for uid, item in by_folder[folder]:
+            pred = digits(item.get("predicted_channel_number"))
+            gt = gt_map.get(folder) if gt_map else None
+            img = find_image(images_dir, uid)
+            if img is None:
+                n_noimg += 1
+                continue
+            bbox = selected_bbox(item)
+            if gt is not None:
+                ok = gt != "" and norm(pred) == norm(gt)
+                sub = "success" if ok else "fail"
+                tag = "ok" if ok else "ng"
+                name = f"{uid}__gt{gt}__pred{pred or 'none'}__{tag}.jpg"
+                dst = out / sub / folder / name
+                per_folder[folder][0] += int(ok); per_folder[folder][1] += 1
+                f_ok += int(ok); f_tot += 1
+                n_ok += int(ok); n_fail += int(not ok)
+            else:
+                dst = out / "all" / folder / f"{uid}__pred{pred or 'none'}.jpg"
+            if draw(img, bbox, pred, gt, dst):
+                n_all += 1
+        if gt_map:
+            gt = gt_map.get(folder)
+            print(f"  [{folder}] gt={gt}  정확도 {round(f_ok/f_tot*100,1) if f_tot else '-'}%  "
+                  f"({f_ok}/{f_tot})", flush=True)
+        else:
+            # no GT: show the majority-vote prediction for the folder
+            preds = [digits(it.get("predicted_channel_number")) for _, it in by_folder[folder]]
+            preds = [p for p in preds if p]
+            best = Counter(preds).most_common(1)[0][0] if preds else "-"
+            print(f"  [{folder}] 예측 채널번호(다수결)={best}  ({len(by_folder[folder])}프레임)", flush=True)
+
+    print(f"\n정성이미지 저장: {n_all}장 -> {out}")
     if n_noimg:
         print(f"  (이미지 못 찾음 {n_noimg}장 — 원본 심링크 확인)")
     if gt_map:
-        print(f"  성공 {n_ok} / 실패 {n_fail}")
         acc = out / "per_folder_accuracy.csv"
         import csv
         with acc.open("w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f); w.writerow(["folder", "accuracy(%)", "n_frames", "n_correct"])
             for fld, (ok, tot) in sorted(per_folder.items()):
                 w.writerow([fld, round(ok / tot * 100, 2) if tot else "", tot, ok])
-        print(f"  폴더별 정확도 -> {acc}")
-        print("\n=== 폴더별 정확도 ===")
+        print("\n" + "=" * 60)
+        print("=== 폴더(UI)별 채널번호 정확도 ===")
         for fld, (ok, tot) in sorted(per_folder.items()):
-            print(f"  {fld}: {round(ok/tot*100,1) if tot else '-'}%  ({ok}/{tot})")
+            mark = "✓" if tot and ok == tot else ("✗" if tot and ok == 0 else "~")
+            print(f"  [{mark}] {fld}: {round(ok/tot*100,1) if tot else '-'}%  ({ok}/{tot})")
+        tot_all = n_ok + n_fail
+        print("-" * 60)
+        print(f"  전체 정확도: {round(n_ok/tot_all*100,2) if tot_all else '-'}%  "
+              f"(맞음 {n_ok} / 틀림 {n_fail} / 총 {tot_all}프레임)")
+        print(f"  폴더 {len(per_folder)}개  |  success/ · fail/ 로 분리 저장")
+        print("=" * 60)
+        print(f"  폴더별 정확도 CSV -> {acc}")
     else:
-        print("  (정답 없음 → all/ 아래 전부 저장. --labels 주면 success/fail 분리 + 정확도)")
+        print("  (정답 없음 → all/ 아래 전부 저장. --labels 주면 success/fail 분리 + 정확도 로그)")
 
 
 if __name__ == "__main__":
