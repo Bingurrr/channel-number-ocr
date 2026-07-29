@@ -226,10 +226,10 @@ def main():
         profs = profile_sequence(frames, ok_uids)
         field = profs[0] if profs and profs[0]["score"] > 0 else None
         if field is None and profs:
-            # fallback (하드 UI): 순수숫자 점수가 0이어도, 가장 자주 나오는 compact 숫자 슬롯 채택
-            #  -> 강제 재읽기가 값을 정리. threshold를 낮추는 대신 "위치만" 완화해서 잡음.
-            cands = [p for p in profs if 0.25 <= p["aspect"] <= 5.0 and p["area%"] < 6.0
-                     and present_ratio(p) >= 0.3]
+            # fallback (하드 UI): 점수가 0이어도, 값이 실제로 바뀌는(distinct>=2) compact 숫자 슬롯만.
+            #  값 다양성 없는 슬롯(고정숫자/빈화면 negative)은 채널이 아니므로 fallback도 안 함.
+            cands = [p for p in profs if 0.25 <= p["aspect"] <= 6.0 and p["area%"] < 6.0
+                     and present_ratio(p) >= 0.4 and p.get("distinct_values", 0) >= 2]
             if cands:
                 field = max(cands, key=present_ratio); field["_fallback"] = True
         if field:

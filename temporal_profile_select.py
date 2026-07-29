@@ -110,17 +110,22 @@ def profile_sequence(frames, ids, dist_thr=0.05):
         chan_ratio = sum(t == "channelnum" for t in types) / max(1, len(types))
         text_ratio = sum(t == "text" for t in types) / max(1, len(types))
         time_ratio = sum(t in ("time", "date") for t in types) / max(1, len(types))
+        # --- 값 다양성 (핵심): zap하면 값이 바뀌는 자리만 채널. 시계/고정숫자는 값이 안 변함 ---
+        chan_vals = [it["value"] for it in items if it["type"] == "channelnum" and it["value"]]
+        distinct = len(set(chan_vals))
         mbox = [st.median([b[k] for b in cl["boxes"]]) for k in range(4)]
         w = max(1.0, mbox[2] - mbox[0]); h = max(1.0, mbox[3] - mbox[1])
         aspect = w / h
         area_frac = (w * h) / (W0 * H0)
         pos_std = (st.pstdev(cl["cxs"]) + st.pstdev(cl["cys"])) if len(cl["cxs"]) > 1 else 0.0
-        # 크기(폰트) 일관성: 채널번호는 프레임간 글자 높이가 일정 -> 높이 변동계수 낮음
         hs = [b[3] - b[1] for b in cl["boxes"]]
         h_mean = sum(hs) / max(1, len(hs))
         h_cv = (st.pstdev(hs) / h_mean) if (len(hs) > 1 and h_mean > 0) else 0.0
 
         score = chan_ratio * (present / max(1, n))
+        # === 값 다양성 자격 조건 (v3 slot analysis) ===
+        #   값이 2가지 이상 = 채널(zap마다 변함).  1가지뿐 = 시계/로고/고정숫자 -> 구조적 탈락
+        score *= (1.0 + 0.15 * distinct) if distinct >= 2 else 0.1
         # --- UI-invariant gates ---
         if time_ratio > 0.4:                     # 시간/날짜 슬롯 = 채널 아님
             score = 0.0
@@ -136,7 +141,8 @@ def profile_sequence(frames, ids, dist_thr=0.05):
             score *= 0.6
         profs.append({
             "chan_ratio": round(chan_ratio, 2), "present": f"{present}/{n}",
-            "text_ratio": round(text_ratio, 2), "time_ratio": round(time_ratio, 2),
+            "distinct_values": distinct, "text_ratio": round(text_ratio, 2),
+            "time_ratio": round(time_ratio, 2),
             "aspect": round(aspect, 2), "area%": round(area_frac * 100, 2),
             "pos_std": round(pos_std, 3), "h_cv": round(h_cv, 2), "score": round(score, 3),
             "median_box": [round(v, 1) for v in mbox],
