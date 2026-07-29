@@ -35,7 +35,7 @@ def digit_tokens(text: str):
     """Pure-digit runs of length 1-4 that are not part of a clock time."""
     if TIME_RE.search(str(text)):
         return []
-    return [t for t in re.findall(r"\d+", str(text)) if 1 <= len(t) <= 4]
+    return [t for t in re.findall(r"\d+", str(text)) if 1 <= len(t) <= 5]
 
 
 def main() -> None:

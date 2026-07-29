@@ -52,6 +52,9 @@ def main():
     ap.add_argument("--split-output", action="store_true")
     ap.add_argument("--samples-per-folder", type=int, default=20)
     ap.add_argument("--no-qualitative", action="store_true")
+    ap.add_argument("--no-force-read", action="store_true",
+                    help="ROI crop full-OCR 재읽기 끄기 (기본은 못읽은 프레임의 확정 ROI를 "
+                         "crop+확대해서 full OCR로 다시 읽음 -> 작은숫자 살림, 커버리지↑)")
     ap.add_argument("--viz-steps", type=int, default=0, metavar="N")
     ap.add_argument("--debug-unread", type=int, default=0, metavar="N")
     ap.add_argument("--keep-staged", action="store_true")
@@ -103,6 +106,57 @@ def main():
                        "fallback": bool(field.get("_fallback")) if field else False,
                        "profiles": profs[:6]})
         per_folder[g] = (report[-1], field)
+
+    # === 필드 강제 재읽기 (full OCR): 못 읽은 프레임을 확정 ROI crop+확대해서 재OCR ===
+    #   전체이미지 OCR이 놓친 작은/흐린 채널숫자를, 과거에 채널이던 ROI만 crop하면 살릴 수 있음
+    if not args.no_force_read:
+        field_lbl = out / "field_labels"; sub = out / "unread_imgs"
+        for dd in (field_lbl, sub):
+            shutil.rmtree(dd, ignore_errors=True); dd.mkdir(parents=True, exist_ok=True)
+        unread = []
+        for g, (entry, field) in per_folder.items():
+            if not field:
+                continue
+            bx = field["median_box"]
+            for uid in sorted(seqs.get(g, [])):
+                if uid in by_id and uid not in field["per_frame"]:
+                    im = by_id[uid]
+                    W = float(im.get("image_width") or 1280) or 1280
+                    H = float(im.get("image_height") or 720) or 720
+                    cx = ((bx[0] + bx[2]) / 2) / W; cy = ((bx[1] + bx[3]) / 2) / H
+                    bw = (bx[2] - bx[0]) / W; bh = (bx[3] - bx[1]) / H
+                    (field_lbl / f"{uid}.txt").write_text(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
+                    ip = im.get("image_path")
+                    if ip:
+                        link = sub / Path(ip).name
+                        if not (link.exists() or link.is_symlink()):
+                            try:
+                                os.symlink(Path(ip).resolve(), link)
+                            except Exception:
+                                pass
+                    unread.append(uid)
+        if unread:
+            rc = P.sh([PY, f"{SRC}/fullocr_crops.py", "--images", sub, "--yolo-label-dir", field_lbl,
+                       "--out", out / "field_read.json", "--pad", "0.2", "--min-height", "48",
+                       "--progress-every", "200"], env)
+            if rc == 0 and (out / "field_read.json").exists():
+                fr = json.loads((out / "field_read.json").read_text())
+                readval = {}
+                for im in fr.get("images", []):
+                    for c in im.get("candidates", []):
+                        d = P._dg(c.get("text", ""))
+                        if d and 1 <= len(d) <= 5:
+                            readval[im["image_id"]] = d; break
+                filled = 0
+                for g, (entry, field) in per_folder.items():
+                    if not field:
+                        continue
+                    for uid in seqs.get(g, []):
+                        if uid in readval and uid not in field["per_frame"]:
+                            field["per_frame"][uid] = readval[uid]; filled += 1
+                print(f"[force-read/full-OCR] ROI crop 재읽기로 {filled}프레임 회수 "
+                      f"(unread {len(unread)}중)", flush=True)
+        shutil.rmtree(sub, ignore_errors=True)
 
     # === rows + 출력 ===
     rows, per_folder3 = [], {}
