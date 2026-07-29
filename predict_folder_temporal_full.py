@@ -130,7 +130,8 @@ def main():
                 for r in frows:
                     w.writerow({"frame": r["frame"], "channel_number": r["channel_number"]})
 
-    # 정성 이미지: 채널 필드 박스 + 프레임별 값 (GT 있으면 초록=맞음/빨강=틀림)
+    # 정성 이미지: 성공 최대 N개 + 실패 전부(_failures/). 채널 필드 박스 + 값.
+    #   GT(파일명) 있으면 성공=값 일치 / 실패=불일치·미검출.  없으면 실패=미검출.
     if not args.no_qualitative:
         try:
             from PIL import Image, ImageDraw
@@ -139,40 +140,57 @@ def main():
         if Image is not None:
             norm = lambda s: str(int(s)) if s else ""
             saved = 0
+            used_q = {}
             for g, (entry, frows, field) in per_folder.items():
                 if not field:
                     continue
                 box = [int(v) for v in field["median_box"]]
                 pf = field["per_frame"]
-                uids = list(pf.keys())
-                step = max(1, len(uids) // max(1, args.samples_per_folder))
-                sample = uids[::step][:args.samples_per_folder]
+                all_uids = [u for u in sorted(seqs.get(g, [])) if u in by_id]
+                oks, fails = [], []
+                for uid in all_uids:
+                    pred = P._dg(pf.get(uid, ""))
+                    if args.gt_from_filename:
+                        gt = P.gt_from_name(meta.get(uid, uid))
+                        is_fail = (not pred) or (gt and norm(pred) != norm(gt))
+                    else:
+                        is_fail = not pred            # GT 없으면: 채널 미검출 = 실패
+                    (fails if is_fail else oks).append(uid)
+                step = max(1, len(oks) // max(1, args.samples_per_folder))
+                sample_ok = oks[::step][:args.samples_per_folder]
+                to_draw = [(u, False) for u in sample_ok] + [(u, True) for u in fails]
+                if not to_draw:
+                    continue
                 if args.split_output:
                     base = Path(g).name if g not in ("", "(root)") else root.name
-                    qd = out / safe(base) / "qualitative"
+                    nm = safe(base)
+                    while nm in used_q and used_q[nm] != g:
+                        nm += "_x"
+                    used_q[nm] = g
+                    qd = out / nm / "qualitative"
                 else:
                     qd = out / "qualitative" / safe(g)
+                faildir = qd / "_failures"
                 qd.mkdir(parents=True, exist_ok=True)
-                for uid in sample:
-                    im0 = by_id.get(uid)
-                    if not im0:
-                        continue
+                if fails:
+                    faildir.mkdir(parents=True, exist_ok=True)
+                for uid, is_fail in to_draw:
                     try:
-                        img = Image.open(im0.get("image_path")).convert("RGB")
+                        img = Image.open(by_id[uid].get("image_path")).convert("RGB")
                     except Exception:
                         continue
                     d = ImageDraw.Draw(img)
-                    val = pf[uid]
-                    color = (255, 165, 0)                # 주황(기본)
-                    if args.gt_from_filename:
-                        gt = P.gt_from_name(meta.get(uid, uid))
-                        if gt:
-                            color = (0, 200, 0) if norm(P._dg(val)) == norm(gt) else (255, 0, 0)
+                    val = pf.get(uid, "") or "(none)"
+                    color = (255, 0, 0) if is_fail else (0, 200, 0)   # 빨강 실패 / 초록 성공
                     d.rectangle(box, outline=color, width=3)
-                    d.text((box[0], max(0, box[1] - 14)), f"ch:{val}", fill=color)
-                    img.save(qd / f"{meta.get(uid, uid)}.jpg", quality=88)
+                    label = f"ch:{val}"
+                    if is_fail and args.gt_from_filename:
+                        label += f" (gt:{P.gt_from_name(meta.get(uid, uid))})"
+                    d.text((box[0], max(0, box[1] - 14)), label, fill=color)
+                    dst = (faildir if is_fail else qd) / f"{meta.get(uid, uid)}.jpg"
+                    img.save(dst, quality=88)
                     saved += 1
-            print(f"정성 이미지 {saved}장 (채널 필드 박스 + 값)", flush=True)
+            print(f"정성 이미지 {saved}장 (성공 샘플 + _failures/ 실패 전부)", flush=True)
 
     print(f"\n채널 필드(폴더별):")
     for r in report:
