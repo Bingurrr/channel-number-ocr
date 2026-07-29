@@ -134,10 +134,10 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
 
                 # ---- 1) input ----
                 im1 = base.copy(); d = ImageDraw.Draw(im1)
-                _label_box(d, (8, 8), "1) 입력 원본", (255, 255, 0), Ft)
+                _label_box(d, (8, 8), "1) input", (255, 255, 0), Ft)
                 im1.save(sdir / "1_input.jpg", quality=90)
 
-                # ---- 2) full OCR (모든 텍스트+박스, 크게) ----
+                # ---- 2) full OCR (all text boxes) ----
                 im2 = base.copy(); d = ImageDraw.Draw(im2)
                 for c in by_id[uid].get("candidates", []):
                     b = c.get("bbox_xyxy"); t = c.get("text", "")
@@ -145,54 +145,60 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
                         continue
                     d.rectangle([int(v) for v in b], outline=(0, 220, 255), width=3)
                     _label_box(d, (b[0], max(0, b[1] - 20)), str(t)[:14], (0, 220, 255), F)
-                _label_box(d, (8, 8), "2) full OCR: 화면 모든 텍스트 (어느게 채널?)", (255, 255, 0), Ft)
+                _label_box(d, (8, 8), "2) full OCR: all text on screen", (255, 255, 0), Ft)
                 im2.save(sdir / "2_fullocr.jpg", quality=90)
 
-                # ---- 3) slots: 같은 위치끼리 묶기 + 그 자리 프레임별 값 ----
+                # ---- 3) slots: same-position grouping + per-frame values ----
                 im3 = base.copy(); d = ImageDraw.Draw(im3)
                 for si, s in enumerate(slots):
                     col = SLOTCOL[si % len(SLOTCOL)]
-                    # 이 프레임에서 이 슬롯 멤버 박스
                     for m in s["mem"]:
                         if m["uid"] == uid:
                             d.rectangle([int(v) for v in m["box"]], outline=col, width=3)
-                    # 슬롯 대표 위치에 프레임별 값 리스트
                     bx = s["box"]
                     vals = ",".join(str(v) for v in s["values"][:6])
                     _label_box(d, (bx[0], max(0, bx[1] - 20)), f"[{vals}]", col, Fsmall)
-                _label_box(d, (8, 8), "3) 같은 위치끼리 묶기 (슬롯) + 프레임별 값", (255, 255, 0), Ft)
+                _label_box(d, (8, 8), "3) cluster by position (slots) + values across frames",
+                           (255, 255, 0), Ft)
                 im3.save(sdir / "3_slots.jpg", quality=90)
 
-                # ---- 4) classify: 규칙 분류 (제외 이유) ----
+                # ---- 4) classify: rule-based exclusion (color = type) ----
                 im4 = base.copy(); d = ImageDraw.Draw(im4)
-                reason = {"channel": "채널! 값바뀜", "time": "시간(콜론)",
-                          "constant": "고정값(로고)", "text": "텍스트(이름)", "other": "기타"}
+                LAB = {"channel": ("CHANNEL(value changes)", (0, 210, 0)),
+                       "time": ("time(colon)", (70, 130, 255)),
+                       "constant": ("logo(fixed value)", (255, 150, 0)),
+                       "text": ("text(name)", (170, 170, 170)),
+                       "other": ("other", (170, 170, 170))}
                 for s in slots:
-                    lab = s["label"]
-                    col = (0, 200, 0) if lab == "channel" else (150, 150, 150)
+                    txt, col = LAB.get(s["label"], ("other", (170, 170, 170)))
                     bx = s["box"]
                     d.rectangle([int(v) for v in bx], outline=col,
-                                width=4 if lab == "channel" else 2)
-                    _label_box(d, (bx[0], max(0, bx[1] - 20)),
-                               reason.get(lab, lab), col, F)
-                _label_box(d, (8, 8), "4) 규칙 분류: 시간/로고/텍스트 제외", (255, 255, 0), Ft)
+                                width=5 if s["label"] == "channel" else 2)
+                    _label_box(d, (bx[0], max(0, bx[1] - 20)), txt, col, F)
+                _label_box(d, (8, 8), "4) classify (green=channel, others excluded)",
+                           (255, 255, 0), Ft)
+                # 범례
+                lg = [("green=CHANNEL", (0, 210, 0)), ("blue=time", (70, 130, 255)),
+                      ("orange=logo(fixed)", (255, 150, 0)), ("gray=text", (170, 170, 170))]
+                for li, (lt, lc) in enumerate(lg):
+                    _label_box(d, (8, 44 + li * 24), lt, lc, F)
                 im4.save(sdir / "4_classify.jpg", quality=90)
 
-                # ---- 5) field: 채널 필드 확정 ----
+                # ---- 5) field: channel field confirmed ----
                 im5 = base.copy(); d = ImageDraw.Draw(im5)
                 val = pf.get(uid, "") or "(none)"
                 fbx = [int(v) for v in field["median_box"]]
                 okc = digits(pf.get(uid, "")) and gt_mode and \
                     norm(digits(pf.get(uid, ""))) == norm("".join(ch for ch in meta.get(uid, uid) if ch.isdigit())[:5])
-                col = (0, 200, 0) if (okc or (not gt_mode and digits(pf.get(uid, "")))) else (255, 60, 60)
+                col = (0, 210, 0) if (okc or (not gt_mode and digits(pf.get(uid, "")))) else (255, 60, 60)
                 d.rectangle(fbx, outline=col, width=5)
                 dv = fld_slot["distinct"] if fld_slot else "?"
-                _label_box(d, (fbx[0], max(0, fbx[1] - 24)), f"채널={val}", col, Ft)
+                _label_box(d, (fbx[0], max(0, fbx[1] - 24)), f"channel={val}", col, Ft)
                 _label_box(d, (8, 8),
-                           f"5) 채널 필드 확정 (값 다양성={dv} → zap마다 바뀜)", (255, 255, 0), Ft)
+                           f"5) channel field (value diversity={dv})", (255, 255, 0), Ft)
                 if gt_mode:
                     gtv = "".join(ch for ch in meta.get(uid, uid) if ch.isdigit())[:5]
-                    _label_box(d, (8, 40), f"정답={gtv}  예측={digits(val) or '-'}", col, F)
+                    _label_box(d, (8, 40), f"gt={gtv}  pred={digits(val) or '-'}", col, F)
                 im5.save(sdir / "5_field.jpg", quality=90)
 
     print(f"[step_viz] UI별/스텝별 저장 → {root_out}", flush=True)
