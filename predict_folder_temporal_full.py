@@ -145,6 +145,9 @@ def main():
     ap.add_argument("--no-qualitative", action="store_true", help="정성 이미지 저장 안 함")
     ap.add_argument("--no-yolo", action="store_true",
                     help="YOLO+numeric recheck 끄고 full OCR만 (기본은 YOLO 박스도 numeric OCR로 읽어 후보 보강)")
+    ap.add_argument("--no-field-read", action="store_true",
+                    help="필드 강제 재읽기 끄기 (기본은 채널 필드 위치를 아는데 값 못 읽은 프레임을 "
+                         "그 위치 crop + numeric OCR로 강제로 읽음 -> 커버리지↑)")
     ap.add_argument("--viz-steps", type=int, default=0, metavar="N",
                     help="알고리즘 단계별 몽타주 저장: 성공 N + 실패 N 예시 "
                          "[입력 | full OCR 전체 | 채널 필드 선택]")
@@ -208,8 +211,13 @@ def main():
     def safe(name):
         return (name.replace("/", "__").replace(" ", "_")) or root.name
 
-    rows, report, per_folder = [], [], {}
-    used_names = {}
+    def present_ratio(p):
+        try:
+            a, b = str(p["present"]).split("/"); return int(a) / max(1, int(b))
+        except Exception:
+            return 0.0
+
+    report, per_folder, used_names = [], {}, {}
     for g, uids in sorted(seqs.items()):
         ok_uids = [u for u in sorted(uids) if u in by_id]
         frames = [by_id[u] for u in ok_uids]
@@ -217,16 +225,73 @@ def main():
             continue
         profs = profile_sequence(frames, ok_uids)
         field = profs[0] if profs and profs[0]["score"] > 0 else None
+        if field is None and profs:
+            # fallback (하드 UI): 순수숫자 점수가 0이어도, 가장 자주 나오는 compact 숫자 슬롯 채택
+            #  -> 강제 재읽기가 값을 정리. threshold를 낮추는 대신 "위치만" 완화해서 잡음.
+            cands = [p for p in profs if 0.25 <= p["aspect"] <= 5.0 and p["area%"] < 6.0
+                     and present_ratio(p) >= 0.3]
+            if cands:
+                field = max(cands, key=present_ratio); field["_fallback"] = True
         if field:
-            rec = recover_field_values(frames, ok_uids, field)   # 못 읽은 프레임 필드위치서 복구
-            if rec:
-                print(f"  [{g}] 필드위치 복구 {rec}프레임", flush=True)
+            recover_field_values(frames, ok_uids, field)
         entry = {"folder": g, "channel_field_box": field["median_box"] if field else None,
-                 "field_score": field["score"] if field else 0.0, "profiles": profs[:6]}
+                 "field_score": round(field["score"], 3) if field else 0.0,
+                 "fallback": bool(field.get("_fallback")) if field else False,
+                 "profiles": profs[:6]}
         report.append(entry)
+        per_folder[g] = (entry, field)
+
+    # ---- 필드 강제 재읽기: 필드는 아는데 값 못 읽은 프레임 -> 그 위치 crop + numeric OCR ----
+    if not args.no_field_read:
+        field_lbl = out / "field_labels"
+        shutil.rmtree(field_lbl, ignore_errors=True); field_lbl.mkdir(parents=True, exist_ok=True)
+        unread = []
+        for g, (entry, field) in per_folder.items():
+            if not field:
+                continue
+            bx = field["median_box"]
+            for uid in sorted(seqs.get(g, [])):
+                if uid in by_id and uid not in field["per_frame"]:
+                    im = by_id[uid]
+                    W = float(im.get("image_width") or 1280) or 1280
+                    H = float(im.get("image_height") or 720) or 720
+                    cx = ((bx[0] + bx[2]) / 2) / W; cy = ((bx[1] + bx[3]) / 2) / H
+                    bw = (bx[2] - bx[0]) / W; bh = (bx[3] - bx[1]) / H
+                    (field_lbl / f"{uid}.txt").write_text(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n")
+                    unread.append(uid)
+        if unread:
+            (out / "field_min.json").write_text(json.dumps(
+                {"images": [{"image_id": u, "image_path": by_id[u].get("image_path")} for u in unread]},
+                ensure_ascii=False))
+            rc = P.sh([PY, cfg["recheck_padded"], "--ocr-json", out / "field_min.json",
+                       "--out", out / "field_read.json", "--yolo-label-dir", field_lbl,
+                       "--model-dir", cfg["numeric_ocr"], "--model-name", "PP-OCRv5_mobile_rec",
+                       "--device", "gpu", "--input-shape", "3,48,320", "--min-conf", 0.0,
+                       "--yolo-only", "--progress-every", 200], env)
+            if rc == 0 and (out / "field_read.json").exists():
+                fr = json.loads((out / "field_read.json").read_text())
+                readval = {}
+                for im in fr.get("images", []):
+                    for c in im.get("candidates", []):
+                        d = P._dg(c.get("text", ""))
+                        if d and 1 <= len(d) <= 4:
+                            readval[im["image_id"]] = d; break
+                filled = 0
+                for g, (entry, field) in per_folder.items():
+                    if not field:
+                        continue
+                    for uid in seqs.get(g, []):
+                        if uid in readval and uid not in field["per_frame"]:
+                            field["per_frame"][uid] = readval[uid]; filled += 1
+                print(f"[force-read] 필드 crop 강제 읽기로 {filled}프레임 회수 "
+                      f"(unread {len(unread)}중)", flush=True)
+
+    # ---- rows 생성 (force-read 반영 후) ----
+    rows = []
+    for g, (entry, field) in list(per_folder.items()):
         frows = []
         if field:
-            for uid, val in field["per_frame"].items():
+            for uid, val in sorted(field["per_frame"].items()):
                 r = {"folder": g, "frame": meta.get(uid, uid), "channel_number": val}
                 rows.append(r); frows.append(r)
         per_folder[g] = (entry, frows, field)
