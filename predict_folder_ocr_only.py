@@ -28,7 +28,8 @@ from pathlib import Path
 
 import predict_folder as P
 from temporal_profile_select import profile_sequence
-from predict_folder_temporal_full import recover_field_values, make_step_viz
+from predict_folder_temporal_full import recover_field_values
+import step_viz
 
 
 def _safe(name, root):
@@ -218,7 +219,8 @@ def main():
         print(f"  {'-'*40}\n  {'전체':<40}{pc(co,tot):>7}{pc(rd,tot):>7}{pc(co,rd):>10}{f'{co}/{tot}':>16}")
 
     if args.viz_steps > 0:
-        make_step_viz(by_id, seqs, per_folder3, meta, out, args.viz_steps, args.gt_from_filename)
+        step_viz.render(by_id, seqs, per_folder3, meta, out, args.viz_steps,
+                        args.gt_from_filename, lambda s: _safe(s, root))
 
     print(f"\n결과: {out}/per_frame.csv , profile_report.json  (프레임별 채널 {len(rows)}개)")
     if not args.keep_staged:
