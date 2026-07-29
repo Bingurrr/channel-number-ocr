@@ -151,6 +151,8 @@ def main():
     ap.add_argument("--viz-steps", type=int, default=0, metavar="N",
                     help="알고리즘 단계별 몽타주 저장: 성공 N + 실패 N 예시 "
                          "[입력 | full OCR 전체 | 채널 필드 선택]")
+    ap.add_argument("--debug-unread", type=int, default=0, metavar="N",
+                    help="못 읽은 프레임 원인 분석: 원인 분포 + unread_debug.csv + 폴더당 N장 필드 crop 저장")
     ap.add_argument("--keep-staged", action="store_true")
     args = ap.parse_args()
 
@@ -285,6 +287,65 @@ def main():
                             field["per_frame"][uid] = readval[uid]; filled += 1
                 print(f"[force-read] 필드 crop 강제 읽기로 {filled}프레임 회수 "
                       f"(unread {len(unread)}중)", flush=True)
+
+    # ---- 디버그: 왜 못 읽었나 (원인 분류 + 필드 crop 저장) ----
+    if args.debug_unread > 0:
+        try:
+            from PIL import Image
+        except Exception:
+            Image = None
+        from collections import Counter
+        ddir = out / "debug_unread"
+        dbg, saved_ct = [], {}
+        for g, (entry, field) in per_folder.items():
+            gname = safe(Path(g).name if g not in ("", "(root)") else root.name)
+            for uid in sorted(seqs.get(g, [])):
+                if uid not in by_id or (field and uid in field["per_frame"]):
+                    continue
+                if not field:
+                    reason = "no_field(폴더 채널필드 자체를 못 찾음)"
+                    near_txt = []
+                else:
+                    bx = field["median_box"]; im = by_id[uid]
+                    W = float(im.get("image_width") or 1280) or 1280
+                    H = float(im.get("image_height") or 720) or 720
+                    fcx = ((bx[0] + bx[2]) / 2) / W; fcy = ((bx[1] + bx[3]) / 2) / H
+                    near_txt = []
+                    for c in im.get("candidates", []):
+                        b = c.get("bbox_xyxy")
+                        if not b or len(b) != 4:
+                            continue
+                        cx = ((b[0] + b[2]) / 2) / W; cy = ((b[1] + b[3]) / 2) / H
+                        if ((cx - fcx) ** 2 + (cy - fcy) ** 2) ** 0.5 < 0.06:
+                            near_txt.append(c.get("text", ""))
+                    if not near_txt:
+                        reason = "nothing_near_field(OCR/YOLO가 필드위치서 아무것도 검출못함)"
+                    elif not any(P._dg(t) for t in near_txt):
+                        reason = "text_only(필드에 글자만, 숫자없음)"
+                    else:
+                        reason = "digit_but_rejected(숫자있으나 걸러짐-병합/포맷)"
+                dbg.append({"folder": g, "frame": meta.get(uid, uid),
+                            "reason": reason, "ocr_near_field": " | ".join(str(t) for t in near_txt[:3])})
+                # 필드 crop 저장 (원인 눈으로) — 폴더당 N장
+                if Image is not None and field and saved_ct.get(g, 0) < args.debug_unread:
+                    try:
+                        im2 = Image.open(by_id[uid].get("image_path")).convert("RGB")
+                        bx = field["median_box"]; pad = 25
+                        cr = im2.crop((max(0, int(bx[0] - pad)), max(0, int(bx[1] - pad)),
+                                       int(bx[2] + pad), int(bx[3] + pad)))
+                        cr = cr.resize((max(1, cr.width * 3), max(1, cr.height * 3)))
+                        (ddir / gname).mkdir(parents=True, exist_ok=True)
+                        cr.save(ddir / gname / f"{meta.get(uid, uid)}.jpg", quality=90)
+                        saved_ct[g] = saved_ct.get(g, 0) + 1
+                    except Exception:
+                        pass
+        with (out / "unread_debug.csv").open("w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=["folder", "frame", "reason", "ocr_near_field"])
+            w.writeheader(); w.writerows(dbg)
+        print("\n=== 못 읽은 원인 분포 ===")
+        for r, c in Counter(d["reason"].split("(")[0] for d in dbg).most_common():
+            print(f"  {r}: {c}장")
+        print(f"  → 상세: {out}/unread_debug.csv , 필드 crop: {ddir}/  ({sum(saved_ct.values())}장)")
 
     # ---- rows 생성 (force-read 반영 후) ----
     rows = []
