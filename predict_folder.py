@@ -68,6 +68,9 @@ def collect(root: Path, flat: Path, symlink: bool):
     seqs: group->[uid]). Each image is staged into `flat` under a globally-unique
     uid name. Default = COPY once (safe for remote mounts); --symlink to link.
     Unreadable/corrupt images are skipped so the pipeline doesn't crash on them."""
+    # 이전(중단된) 실행의 잔여 파일 제거 — 안 지우면 옛 uid가 섞여 문제 생김
+    if flat.exists():
+        shutil.rmtree(flat, ignore_errors=True)
     flat.mkdir(parents=True, exist_ok=True)
     index, meta, seqs = {}, {}, defaultdict(list)
     used = {}
