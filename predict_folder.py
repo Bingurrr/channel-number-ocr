@@ -49,13 +49,29 @@ def load_config():
     return c
 
 
+def _decodable(path):
+    """True if the image can actually be decoded (skip truncated/corrupt files)."""
+    try:
+        from PIL import Image as _I
+    except Exception:
+        return True                              # PIL 없으면 검증 생략
+    try:
+        with _I.open(path) as im:
+            im.load()                            # full decode — catches truncation
+        return True
+    except Exception:
+        return False
+
+
 def collect(root: Path, flat: Path, symlink: bool):
     """Recursively find images. Return (index: uid->group, meta: uid->orig_stem,
     seqs: group->[uid]). Each image is staged into `flat` under a globally-unique
-    uid name. Default = COPY once (safe for remote mounts); --symlink to link."""
+    uid name. Default = COPY once (safe for remote mounts); --symlink to link.
+    Unreadable/corrupt images are skipped so the pipeline doesn't crash on them."""
     flat.mkdir(parents=True, exist_ok=True)
     index, meta, seqs = {}, {}, defaultdict(list)
     used = {}
+    bad = []
     imgs = [p for p in sorted(root.rglob("*"))
             if p.is_file() and p.suffix.lower() in IMG_EXTS]
     n = len(imgs)
@@ -70,14 +86,22 @@ def collect(root: Path, flat: Path, symlink: bool):
             link.unlink()
         if symlink:
             os.symlink(img.resolve(), link)
+            if not _decodable(link):            # 손상 이미지 스킵
+                link.unlink(); del used[uid]; bad.append(str(img)); continue
         else:
             shutil.copyfile(img, link)          # content only (rclone has no xattr);
                                                 # read remote ONCE, sequentially
+            if not _decodable(link):            # 복사본이 깨졌으면 스킵
+                link.unlink(); del used[uid]; bad.append(str(img)); continue
             if i % 500 == 0 or i == n:
                 print(f"  staged {i}/{n} to local disk", flush=True)
         index[uid] = group
         meta[uid] = img.stem
         seqs[group].append(uid)
+    if bad:
+        (flat.parent / "skipped_unreadable.txt").write_text("\n".join(bad))
+        print(f"[skip] 손상/읽기불가 이미지 {len(bad)}장 건너뜀 "
+              f"(목록: {flat.parent / 'skipped_unreadable.txt'})", flush=True)
     return index, meta, seqs
 
 
