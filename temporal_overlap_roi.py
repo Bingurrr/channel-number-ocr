@@ -92,17 +92,31 @@ def process(frames, out_dir, n, size):
     std = gray.std(axis=0)                       # 낮음=정적(UI), 높음=영상
     mean = color.mean(axis=0)
     std_n = std / (std.max() + 1e-6)
-    edges = edge_map(mean.mean(axis=2))
-    # 정적(std 낮음) & 텍스트다움(엣지 높음) = 채널번호/UI 텍스트 후보
+
+    # --- 엣지 지속성: 모든 프레임에서 같은 위치에 엣지가 있으면 정적 구조(맨숫자도 잡힘) ---
+    ethr = None
+    ecount = np.zeros_like(std, dtype=np.float32)
+    for g in gray:
+        e = edge_map(g)
+        if ethr is None:
+            ethr = np.percentile(e, 85)
+        ecount += (e > ethr)
+    edge_persist = ecount / gray.shape[0]        # 1.0 = 모든 프레임에서 엣지 (정적)
+    mean_edges = edge_map(mean.mean(axis=2))
+
+    # 채널번호/UI 후보 = (정적 std 낮음) 또는 (엣지 지속성 높음) + 텍스트다움
     static_low = std_n < np.percentile(std_n, 35)
-    text_like = edges > np.percentile(edges, 80)
-    mask = static_low & text_like
+    persistent = edge_persist > 0.8              # 80%+ 프레임에서 엣지 = 정적 획
+    text_like = mean_edges > np.percentile(mean_edges, 80)
+    mask = (static_low | persistent) & text_like
 
     out_dir.mkdir(parents=True, exist_ok=True)
     Image.fromarray(mean.astype(np.uint8)).save(out_dir / "mean.jpg", quality=90)
     # std heatmap: 어두울수록 정적
     heat = (std_n * 255).astype(np.uint8)
     Image.fromarray(heat).save(out_dir / "stdmap.jpg")
+    # 엣지 지속성 맵: 밝을수록 정적 획(맨숫자 포함) — std가 놓치는 걸 잡음
+    Image.fromarray((edge_persist * 255).astype(np.uint8)).save(out_dir / "edge_persist.jpg")
     # static: std 낮은 곳만 mean, 나머지는 회색
     static_img = mean.copy()
     static_img[~static_low] = 128
