@@ -37,6 +37,8 @@ def main():
     ap.add_argument("--symlink", action="store_true")
     ap.add_argument("--detector", default=None, help="검출기 pt 오버라이드")
     ap.add_argument("--gt-from-filename", action="store_true", help="파일명=정답으로 정확도 채점")
+    ap.add_argument("--split-output", action="store_true",
+                    help="--out 아래에 UI별(폴더 이름) 하위폴더로 결과 분리 저장")
     ap.add_argument("--keep-staged", action="store_true")
     args = ap.parse_args()
 
@@ -80,7 +82,12 @@ def main():
     # 3) temporal profiling -> channel field + per-frame value
     cand = json.loads((out / "full_ocr.json").read_text())
     by_id = {im["image_id"]: im for im in cand.get("images", [])}
-    rows, report = [], []
+
+    def safe(name):
+        return (name.replace("/", "__").replace(" ", "_")) or root.name
+
+    rows, report, per_folder = [], [], {}
+    used_names = {}
     for g, uids in sorted(seqs.items()):
         ok_uids = [u for u in sorted(uids) if u in by_id]
         frames = [by_id[u] for u in ok_uids]
@@ -88,16 +95,37 @@ def main():
             continue
         profs = profile_sequence(frames, ok_uids)
         field = profs[0] if profs and profs[0]["score"] > 0 else None
-        report.append({"folder": g, "channel_field_box": field["median_box"] if field else None,
-                       "field_score": field["score"] if field else 0.0, "profiles": profs[:6]})
+        entry = {"folder": g, "channel_field_box": field["median_box"] if field else None,
+                 "field_score": field["score"] if field else 0.0, "profiles": profs[:6]}
+        report.append(entry)
+        frows = []
         if field:
             for uid, val in field["per_frame"].items():
-                rows.append({"folder": g, "frame": meta.get(uid, uid), "channel_number": val})
+                r = {"folder": g, "frame": meta.get(uid, uid), "channel_number": val}
+                rows.append(r); frows.append(r)
+        per_folder[g] = (entry, frows)
 
     with (out / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["folder", "frame", "channel_number"])
         w.writeheader(); w.writerows(rows)
     (out / "profile_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+
+    # UI별 분리 저장
+    if args.split_output:
+        for g, (entry, frows) in per_folder.items():
+            base = Path(g).name if g not in ("", "(root)") else root.name
+            name = safe(base)
+            while name in used_names and used_names[name] != g:
+                name += "_x"
+            used_names[name] = g
+            gdir = out / name
+            gdir.mkdir(parents=True, exist_ok=True)
+            (gdir / "profile_report.json").write_text(json.dumps(entry, ensure_ascii=False, indent=2))
+            with (gdir / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, fieldnames=["frame", "channel_number"])
+                w.writeheader()
+                for r in frows:
+                    w.writerow({"frame": r["frame"], "channel_number": r["channel_number"]})
 
     print(f"\n채널 필드(폴더별):")
     for r in report:
