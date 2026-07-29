@@ -178,12 +178,15 @@ def main():
         {"sequence_id": g.replace('/', '__'), "group_key": g, "images": sorted(v)}
         for g, v in sorted(seqs.items())]}, ensure_ascii=False))
 
-    # 1) detector
-    rc = P.sh([PY, f"{SRC}/export_recursive_detector_predictions.py", "--model", cfg["detector"],
-               "--images-dir", flat, "--output-dir", out / "detector", "--imgsz", cfg["imgsz"],
-               "--device", args.device, "--batch", args.batch, "--candidate-conf", 0.05], env)
-    if rc != 0:
-        raise SystemExit(f"[temporal_full] detector 실패 (rc={rc})")
+    # 1) detector — YOLO 채널박스 (--no-yolo면 아예 생략: 이후 recheck도 안 쓰므로 순수 경량)
+    if not args.no_yolo:
+        rc = P.sh([PY, f"{SRC}/export_recursive_detector_predictions.py", "--model", cfg["detector"],
+                   "--images-dir", flat, "--output-dir", out / "detector", "--imgsz", cfg["imgsz"],
+                   "--device", args.device, "--batch", args.batch, "--candidate-conf", 0.05], env)
+        if rc != 0:
+            raise SystemExit(f"[temporal_full] detector 실패 (rc={rc})")
+    else:
+        print("[--no-yolo] YOLO 검출 생략 (full OCR + 규칙 + 필드 강제읽기만)", flush=True)
 
     # 2) FULL OCR (general model -> all text/number candidates)
     rc = P.sh([PY, f"{SRC}/run_paddleocr_export.py", "--images", flat, "--out", out / "full_ocr.json",
