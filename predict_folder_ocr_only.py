@@ -52,9 +52,9 @@ def main():
     ap.add_argument("--split-output", action="store_true")
     ap.add_argument("--samples-per-folder", type=int, default=20)
     ap.add_argument("--no-qualitative", action="store_true")
-    ap.add_argument("--no-force-read", action="store_true",
-                    help="ROI crop full-OCR 재읽기 끄기 (기본은 못읽은 프레임의 확정 ROI를 "
-                         "crop+확대해서 full OCR로 다시 읽음 -> 작은숫자 살림, 커버리지↑)")
+    ap.add_argument("--force-read", action="store_true",
+                    help="(선택) 못읽은 프레임의 확정 ROI를 crop+확대해서 full OCR로 다시 읽음 "
+                         "-> 작은숫자 살림, 커버리지↑. 기본은 끔(안 읽으면 None).")
     ap.add_argument("--viz-steps", type=int, default=0, metavar="N")
     ap.add_argument("--debug-unread", type=int, default=0, metavar="N")
     ap.add_argument("--keep-staged", action="store_true")
@@ -109,7 +109,7 @@ def main():
 
     # === 필드 강제 재읽기 (full OCR): 못 읽은 프레임을 확정 ROI crop+확대해서 재OCR ===
     #   전체이미지 OCR이 놓친 작은/흐린 채널숫자를, 과거에 채널이던 ROI만 crop하면 살릴 수 있음
-    if not args.no_force_read:
+    if args.force_read:
         field_lbl = out / "field_labels"; sub = out / "unread_imgs"
         for dd in (field_lbl, sub):
             shutil.rmtree(dd, ignore_errors=True); dd.mkdir(parents=True, exist_ok=True)
