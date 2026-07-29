@@ -39,6 +39,9 @@ def main():
     ap.add_argument("--gt-from-filename", action="store_true", help="파일명=정답으로 정확도 채점")
     ap.add_argument("--split-output", action="store_true",
                     help="--out 아래에 UI별(폴더 이름) 하위폴더로 결과 분리 저장")
+    ap.add_argument("--samples-per-folder", type=int, default=20,
+                    help="정성 이미지: 폴더당 샘플 수 (채널 필드 박스 + 값)")
+    ap.add_argument("--no-qualitative", action="store_true", help="정성 이미지 저장 안 함")
     ap.add_argument("--keep-staged", action="store_true")
     args = ap.parse_args()
 
@@ -103,7 +106,7 @@ def main():
             for uid, val in field["per_frame"].items():
                 r = {"folder": g, "frame": meta.get(uid, uid), "channel_number": val}
                 rows.append(r); frows.append(r)
-        per_folder[g] = (entry, frows)
+        per_folder[g] = (entry, frows, field)
 
     with (out / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["folder", "frame", "channel_number"])
@@ -112,7 +115,7 @@ def main():
 
     # UI별 분리 저장
     if args.split_output:
-        for g, (entry, frows) in per_folder.items():
+        for g, (entry, frows, _field) in per_folder.items():
             base = Path(g).name if g not in ("", "(root)") else root.name
             name = safe(base)
             while name in used_names and used_names[name] != g:
@@ -126,6 +129,50 @@ def main():
                 w.writeheader()
                 for r in frows:
                     w.writerow({"frame": r["frame"], "channel_number": r["channel_number"]})
+
+    # 정성 이미지: 채널 필드 박스 + 프레임별 값 (GT 있으면 초록=맞음/빨강=틀림)
+    if not args.no_qualitative:
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            Image = None
+        if Image is not None:
+            norm = lambda s: str(int(s)) if s else ""
+            saved = 0
+            for g, (entry, frows, field) in per_folder.items():
+                if not field:
+                    continue
+                box = [int(v) for v in field["median_box"]]
+                pf = field["per_frame"]
+                uids = list(pf.keys())
+                step = max(1, len(uids) // max(1, args.samples_per_folder))
+                sample = uids[::step][:args.samples_per_folder]
+                if args.split_output:
+                    base = Path(g).name if g not in ("", "(root)") else root.name
+                    qd = out / safe(base) / "qualitative"
+                else:
+                    qd = out / "qualitative" / safe(g)
+                qd.mkdir(parents=True, exist_ok=True)
+                for uid in sample:
+                    im0 = by_id.get(uid)
+                    if not im0:
+                        continue
+                    try:
+                        img = Image.open(im0.get("image_path")).convert("RGB")
+                    except Exception:
+                        continue
+                    d = ImageDraw.Draw(img)
+                    val = pf[uid]
+                    color = (255, 165, 0)                # 주황(기본)
+                    if args.gt_from_filename:
+                        gt = P.gt_from_name(meta.get(uid, uid))
+                        if gt:
+                            color = (0, 200, 0) if norm(P._dg(val)) == norm(gt) else (255, 0, 0)
+                    d.rectangle(box, outline=color, width=3)
+                    d.text((box[0], max(0, box[1] - 14)), f"ch:{val}", fill=color)
+                    img.save(qd / f"{meta.get(uid, uid)}.jpg", quality=88)
+                    saved += 1
+            print(f"정성 이미지 {saved}장 (채널 필드 박스 + 값)", flush=True)
 
     print(f"\n채널 필드(폴더별):")
     for r in report:
