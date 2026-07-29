@@ -143,6 +143,8 @@ def main():
     ap.add_argument("--samples-per-folder", type=int, default=20,
                     help="정성 이미지: 폴더당 샘플 수 (채널 필드 박스 + 값)")
     ap.add_argument("--no-qualitative", action="store_true", help="정성 이미지 저장 안 함")
+    ap.add_argument("--no-yolo", action="store_true",
+                    help="YOLO+numeric recheck 끄고 full OCR만 (기본은 YOLO 박스도 numeric OCR로 읽어 후보 보강)")
     ap.add_argument("--viz-steps", type=int, default=0, metavar="N",
                     help="알고리즘 단계별 몽타주 저장: 성공 N + 실패 N 예시 "
                          "[입력 | full OCR 전체 | 채널 필드 선택]")
@@ -186,8 +188,21 @@ def main():
     if rc != 0:
         raise SystemExit(f"[temporal_full] full OCR 실패 (rc={rc})")
 
-    # 3) temporal profiling -> channel field + per-frame value
-    cand = json.loads((out / "full_ocr.json").read_text())
+    # 3) numeric recheck on YOLO channel boxes -> read the digits YOLO found even when
+    #    full OCR missed them (bare/small numbers). Adds candidates to the OCR json.
+    cand_json = out / "full_ocr.json"
+    if not args.no_yolo:
+        rc = P.sh([PY, cfg["recheck_padded"], "--ocr-json", out / "full_ocr.json",
+                   "--out", out / "candidates.json", "--yolo-label-dir", out / "detector/labels",
+                   "--model-dir", cfg["numeric_ocr"], "--model-name", "PP-OCRv5_mobile_rec",
+                   "--device", "gpu", "--input-shape", "3,48,320", "--min-conf", 0.0,
+                   "--yolo-only", "--progress-every", 200], env)
+        if rc != 0:
+            raise SystemExit(f"[temporal_full] numeric recheck 실패 (rc={rc})")
+        cand_json = out / "candidates.json"
+
+    # 4) temporal profiling -> channel field + per-frame value
+    cand = json.loads(cand_json.read_text())
     by_id = {im["image_id"]: im for im in cand.get("images", [])}
 
     def safe(name):
