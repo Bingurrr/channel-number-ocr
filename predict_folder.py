@@ -288,6 +288,9 @@ def main():
     ap.add_argument("--root", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--device", default="0")
+    ap.add_argument("--detector", default=None,
+                    help="검출기 가중치 경로 오버라이드 (기본은 config.json). "
+                         "예: models/detector/best_symaug.pt 로 다른 모델 실험")
     ap.add_argument("--batch", type=int, default=16,
                     help="detector batch (낮을수록 GPU/IO 부담 적음; 기본 16)")
     ap.add_argument("--symlink", action="store_true",
@@ -320,6 +323,10 @@ def main():
                          "채널번호)만 저장. 파일명도 정답이 아닐 때 사용.")
     args = ap.parse_args()
     cfg = load_config()
+    if args.detector:                            # 다른 검출기 pt로 실험
+        p = Path(args.detector)
+        cfg["detector"] = str(p if p.is_absolute() else (HERE / p).resolve())
+        print(f"[detector] override -> {cfg['detector']}", flush=True)
     root, out = Path(args.root).resolve(), Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
