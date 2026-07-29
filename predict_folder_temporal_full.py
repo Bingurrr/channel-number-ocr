@@ -391,7 +391,8 @@ def main():
             if field:
                 for uid, val in field["per_frame"].items():
                     pred_by_uid[uid] = P._dg(val)
-        total = read = correct = 0                # total = 정답있는 전체 프레임
+        from collections import defaultdict
+        per = defaultdict(lambda: [0, 0, 0])      # folder -> [total, read, correct]
         for g, uids in seqs.items():
             for uid in uids:
                 if uid not in by_id:
@@ -399,19 +400,25 @@ def main():
                 gt = P.gt_from_name(meta.get(uid, uid))
                 if not gt:
                     continue
-                total += 1
+                per[g][0] += 1
                 pred = pred_by_uid.get(uid, "")
                 if pred:
-                    read += 1
+                    per[g][1] += 1
                     if norm(pred) == norm(gt):
-                        correct += 1
-        e2e = round(correct / total * 100, 1) if total else 0
-        cov = round(read / total * 100, 1) if total else 0
-        acc = round(correct / read * 100, 1) if read else 0
-        print(f"\n=== 정확도 (파일명 정답 기준) ===")
-        print(f"  end-to-end (전체 대비):  {e2e}%   ({correct}/{total})  ← 진짜 성능")
-        print(f"  커버리지 (값 읽은 비율):  {cov}%   ({read}/{total})")
-        print(f"  읽었을 때 정확도:        {acc}%   ({correct}/{read})")
+                        per[g][2] += 1
+        total = sum(v[0] for v in per.values())
+        read = sum(v[1] for v in per.values())
+        correct = sum(v[2] for v in per.values())
+        pc = lambda a, b: round(a / b * 100, 1) if b else 0
+        print(f"\n=== 폴더별 정확도 (파일명 정답 기준) ===")
+        print(f"  {'folder':<38}{'e2e%':>7}{'cov%':>7}{'읽었을때%':>10}{'correct/total':>16}")
+        for g in sorted(per):
+            t, r, c = per[g]
+            print(f"  {g:<38}{pc(c,t):>7}{pc(r,t):>7}{pc(c,r):>10}{f'{c}/{t}':>16}")
+        print(f"  {'-'*38}")
+        print(f"  {'전체':<38}{pc(correct,total):>7}{pc(read,total):>7}{pc(correct,read):>10}"
+              f"{f'{correct}/{total}':>16}")
+        print(f"  ※ e2e = 커버리지 × 읽었을때정확도. negative(배너없음) 폴더는 채널이 없어 낮게 나옴.")
         print(f"  ※ end-to-end = 커버리지 × 읽었을때정확도. 못 읽은 {total-read}장이 진짜 실패.")
 
     if args.viz_steps > 0:
