@@ -21,11 +21,45 @@ import argparse
 import csv
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
 import predict_folder as P
-from temporal_profile_select import profile_sequence, classify
+from temporal_profile_select import profile_sequence, classify, digits as _digits, TIME as _TIME, DATE as _DATE
+
+
+def recover_field_values(frames, ids, field, dist_thr=0.06):
+    """못 읽은 프레임 복구: 알아낸 채널 필드 위치 근처의 숫자 후보를 회수.
+    (재OCR 없이 기존 full OCR 후보에서 필드 근처 1-4자리 숫자를 가져옴)"""
+    box = field["median_box"]
+    W0 = float(frames[0].get("image_width") or 1280) or 1280
+    H0 = float(frames[0].get("image_height") or 720) or 720
+    fcx = ((box[0] + box[2]) / 2) / W0
+    fcy = ((box[1] + box[3]) / 2) / H0
+    have = set(field["per_frame"].keys())
+    recovered = 0
+    for fi, im in enumerate(frames):
+        uid = ids[fi]
+        if uid in have:
+            continue
+        W = float(im.get("image_width") or W0) or W0
+        H = float(im.get("image_height") or H0) or H0
+        best_t, bd = None, dist_thr
+        for c in im.get("candidates", []):
+            b = c.get("bbox_xyxy"); t = c.get("text", "")
+            if not b or len(b) != 4 or not _digits(t):
+                continue
+            cx = ((b[0] + b[2]) / 2) / W; cy = ((b[1] + b[3]) / 2) / H
+            d = ((cx - fcx) ** 2 + (cy - fcy) ** 2) ** 0.5
+            if d < bd:
+                bd, best_t = d, t
+        if best_t and not (_TIME.search(best_t) or _DATE.search(best_t)):
+            toks = [x for x in re.findall(r"\d+", best_t) if 1 <= len(x) <= 4]
+            if toks:
+                field["per_frame"][uid] = toks[0]   # 회수됨
+                recovered += 1
+    return recovered
 
 
 TYPE_COLOR = {"channelnum": (0, 200, 0), "time": (60, 130, 255), "date": (170, 120, 255),
@@ -168,6 +202,10 @@ def main():
             continue
         profs = profile_sequence(frames, ok_uids)
         field = profs[0] if profs and profs[0]["score"] > 0 else None
+        if field:
+            rec = recover_field_values(frames, ok_uids, field)   # 못 읽은 프레임 필드위치서 복구
+            if rec:
+                print(f"  [{g}] 필드위치 복구 {rec}프레임", flush=True)
         entry = {"folder": g, "channel_field_box": field["median_box"] if field else None,
                  "field_score": field["score"] if field else 0.0, "profiles": profs[:6]}
         report.append(entry)
