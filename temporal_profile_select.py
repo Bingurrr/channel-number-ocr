@@ -39,7 +39,14 @@ def digits(s):
     return "".join(c for c in str(s) if c.isdigit())
 
 
+def best_digit(text):
+    """채널 값 = 가장 긴 1~5자리 숫자 덩어리 (접두사/공백 무시)."""
+    toks = [t for t in re.findall(r"\d+", str(text)) if 1 <= len(t) <= 5]
+    return max(toks, key=len) if toks else ""
+
+
 def classify(text):
+    """time / date / channelnum(순수 or 접두사붙은 숫자) / othernum / text."""
     t = str(text)
     if TIME.search(t):
         return "time"
@@ -48,9 +55,17 @@ def classify(text):
     dg = digits(t)
     if not dg:
         return "text"
-    if len(dg) == len(re.sub(r"\s", "", t)) and 1 <= len(dg) <= 4:
-        return "channelnum"                     # pure 1-4 digit
-    return "othernum"                           # long / letters mixed (name, program, code)
+    nonspace = re.sub(r"\s", "", t)
+    if len(dg) == len(nonspace) and 1 <= len(dg) <= 5:
+        return "channelnum"                     # 순수 1~5자리
+    # 접두사 붙은 채널: 숫자 하나 + 나머지가 짧은 라틴 글자 (CH123, Channel 123)
+    toks = [x for x in re.findall(r"\d+", t) if 1 <= len(x) <= 5]
+    if len(toks) == 1:
+        rest = re.sub(r"\d", "", t).strip()
+        if rest == "" or (rest.isascii() and rest.replace(".", "").replace("#", "").isalpha()
+                          and len(rest) <= 8):
+            return "channelnum"                 # 접두사형 (한글/기호 섞인 프로그램명은 제외)
+    return "othernum"                           # 이름/프로그램/코드 (다른 숫자 섞임)
 
 
 def load_sequences(manifest):
@@ -82,7 +97,7 @@ def profile_sequence(frames, ids, dist_thr=0.05):
                 best = {"cx": cx, "cy": cy, "items": [], "boxes": [], "cxs": [], "cys": []}
                 clusters.append(best)
             best["items"].append({"frame": fi, "text": text, "type": classify(text),
-                                  "value": digits(text)})
+                                  "value": best_digit(text)})
             best["boxes"].append(b); best["cxs"].append(cx); best["cys"].append(cy)
             k = len(best["items"])
             best["cx"] = (best["cx"] * (k - 1) + cx) / k
@@ -100,6 +115,10 @@ def profile_sequence(frames, ids, dist_thr=0.05):
         aspect = w / h
         area_frac = (w * h) / (W0 * H0)
         pos_std = (st.pstdev(cl["cxs"]) + st.pstdev(cl["cys"])) if len(cl["cxs"]) > 1 else 0.0
+        # 크기(폰트) 일관성: 채널번호는 프레임간 글자 높이가 일정 -> 높이 변동계수 낮음
+        hs = [b[3] - b[1] for b in cl["boxes"]]
+        h_mean = sum(hs) / max(1, len(hs))
+        h_cv = (st.pstdev(hs) / h_mean) if (len(hs) > 1 and h_mean > 0) else 0.0
 
         score = chan_ratio * (present / max(1, n))
         # --- UI-invariant gates ---
@@ -107,17 +126,19 @@ def profile_sequence(frames, ids, dist_thr=0.05):
             score = 0.0
         if text_ratio > 0.5:                     # 상호배제: 텍스트(이름/프로그램) 슬롯
             score = 0.0
-        if not (0.25 <= aspect <= 5.0):          # 극단적 가로/세로 박스 = 배너/바
+        if not (0.25 <= aspect <= 6.0):          # 극단적 가로/세로 박스 = 배너/바 (5자리 위해 6까지)
             score *= 0.15
         if area_frac > 0.06:                     # 너무 큰 박스(배너)
             score *= 0.15
         if pos_std > 0.03:                       # 위치 불안정
             score *= 0.5
+        if h_cv > 0.35:                          # 글자 높이 들쭉날쭉 = 채널(고정폰트) 아님
+            score *= 0.6
         profs.append({
             "chan_ratio": round(chan_ratio, 2), "present": f"{present}/{n}",
             "text_ratio": round(text_ratio, 2), "time_ratio": round(time_ratio, 2),
             "aspect": round(aspect, 2), "area%": round(area_frac * 100, 2),
-            "pos_std": round(pos_std, 3), "score": round(score, 3),
+            "pos_std": round(pos_std, 3), "h_cv": round(h_cv, 2), "score": round(score, 3),
             "median_box": [round(v, 1) for v in mbox],
             "per_frame": {ids[it["frame"]]: it["value"] for it in items if it["type"] == "channelnum"},
             "sample": [it["text"] for it in items[:4]],

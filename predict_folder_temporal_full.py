@@ -55,7 +55,7 @@ def recover_field_values(frames, ids, field, dist_thr=0.06):
             if d < bd:
                 bd, best_t = d, t
         if best_t and not (_TIME.search(best_t) or _DATE.search(best_t)):
-            toks = [x for x in re.findall(r"\d+", best_t) if 1 <= len(x) <= 4]
+            toks = [x for x in re.findall(r"\d+", best_t) if 1 <= len(x) <= 5]
             if toks:
                 field["per_frame"][uid] = toks[0]   # 회수됨
                 recovered += 1
@@ -274,7 +274,7 @@ def main():
                 for im in fr.get("images", []):
                     for c in im.get("candidates", []):
                         d = P._dg(c.get("text", ""))
-                        if d and 1 <= len(d) <= 4:
+                        if d and 1 <= len(d) <= 5:
                             readval[im["image_id"]] = d; break
                 filled = 0
                 for g, (entry, field) in per_folder.items():
