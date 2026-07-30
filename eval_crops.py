@@ -37,12 +37,27 @@ def best_digit(text):
     return str(int(max(runs, key=len))) if runs else ""
 
 
+def _model_name_of(model_dir):
+    """inference.yml에서 model_name 자동 감지 → 버전(v4/v6small/v6tiny) 무관하게 경로만 바꿔 실험."""
+    y = Path(model_dir) / "inference.yml"
+    if y.exists():
+        try:
+            import yaml
+            n = yaml.safe_load(open(y)).get("Global", {}).get("model_name")
+            if n:
+                return n
+        except Exception:
+            pass
+    return "en_PP-OCRv4_mobile_rec"
+
+
 def load_rec(model_dir):
     from paddleocr import TextRecognition
     want = model_dir and str(model_dir).lower() not in ("none", "")
     if want and Path(model_dir).exists() and (Path(model_dir) / "inference.pdiparams").exists():
-        print(f"[eval] 파인튜닝 rec 사용: {model_dir}", flush=True)
-        return TextRecognition(model_name="en_PP-OCRv4_mobile_rec", model_dir=str(model_dir))
+        name = _model_name_of(model_dir)
+        print(f"[eval] 파인튜닝 rec 사용: {model_dir} (model_name={name})", flush=True)
+        return TextRecognition(model_name=name, model_dir=str(model_dir))
     if want:                                    # 경로 줬는데 없음 → 조용히 순정으로 새지 않게 경고
         print(f"[eval] ⚠ 지정한 rec 경로 없음 → 순정으로 폴백: {model_dir}", flush=True)
     else:

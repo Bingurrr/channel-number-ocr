@@ -143,8 +143,19 @@ def create_paddle_ocr(
     if text_recognition_model_name:
         model_kwargs["text_recognition_model_name"] = text_recognition_model_name
     # 파인튜닝된 rec 가중치를 쓰려면 로컬 inference 디렉토리를 지정 (det은 그대로).
+    # 버전(v4/v6small/v6tiny)마다 model_name이 달라서 dir의 inference.yml에서 자동 감지.
     if text_recognition_model_dir:
         model_kwargs["text_recognition_model_dir"] = text_recognition_model_dir
+        try:
+            import os as _os
+            import yaml as _yaml
+            _yml = _os.path.join(str(text_recognition_model_dir), "inference.yml")
+            if _os.path.exists(_yml):
+                _n = _yaml.safe_load(open(_yml)).get("Global", {}).get("model_name")
+                if _n:
+                    model_kwargs["text_recognition_model_name"] = _n
+        except Exception:
+            pass
 
     attempts = [
         {
