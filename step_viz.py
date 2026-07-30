@@ -128,6 +128,7 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
     F = _font(20); Ft = _font(26); Fsmall = _font(16)
     norm = lambda s: str(int(s)) if s else ""
     root_out = out / "step_viz"
+    CONF_THR = 0.5          # 2_fullocr / 4_classify 공통 신뢰도 게이트 (cluster 기본값과 동일)
 
     for g, (entry, frows, field) in per_folder.items():
         if not field:
@@ -186,15 +187,19 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
                 _label_box(d, (8, 8), "1) input", (255, 255, 0), Ft)
                 im1.save(sdir / "1_input.jpg", quality=90)
 
+                # 이 프레임에서 classify 대상이 되는 박스 = conf 게이트 통과한 것들.
+                # 2_fullocr 와 4_classify 가 '동일한 박스 집합'을 쓰도록 여기서 한 번만 필터.
+                cand = [c for c in by_id[uid].get("candidates", [])
+                        if c.get("bbox_xyxy") and len(c["bbox_xyxy"]) == 4
+                        and float(c.get("ocr_conf", 1.0) or 0.0) >= CONF_THR]
+
                 # ---- 2) full OCR (all text boxes) ----
                 im2 = base.copy(); d = ImageDraw.Draw(im2)
-                for c in by_id[uid].get("candidates", []):
-                    b = c.get("bbox_xyxy"); t = c.get("text", "")
-                    if not b or len(b) != 4:
-                        continue
+                for c in cand:
+                    b = c["bbox_xyxy"]; t = c.get("text", "")
                     d.rectangle([int(v) for v in b], outline=(0, 220, 255), width=3)
                     _label_box(d, (b[0], max(0, b[1] - 20)), str(t)[:14], (0, 220, 255), F)
-                _label_box(d, (8, 8), "2) full OCR: all text on screen", (255, 255, 0), Ft)
+                _label_box(d, (8, 8), f"2) full OCR: all text (conf>={CONF_THR})", (255, 255, 0), Ft)
                 im2.save(sdir / "2_fullocr.jpg", quality=90)
 
                 # ---- 3) slots: same-position grouping + per-frame values ----
@@ -211,27 +216,30 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
                            (255, 255, 0), Ft)
                 im3.save(sdir / "3_slots.jpg", quality=90)
 
-                # ---- 4) classify: rule-based exclusion (color = type) ----
-                # 이 프레임에 '실제로 존재하는' 박스만 그림(빈 영역 유령박스 방지).
-                # 초록=최종 채널(analyze 선택), 노랑=값바뀌나 게이트탈락, 파랑=시간,
-                # 주황=고정로고, 회색=텍스트. 라벨 글자는 채널/후보에만(잡음 방지).
-                COL = {"time": (70, 130, 255), "constant": (255, 150, 0),
-                       "text": (170, 170, 170), "other": (170, 170, 170)}
-                im4 = base.copy(); d = ImageDraw.Draw(im4)
+                # ---- 4) classify: 2_fullocr 의 '모든 박스'에 규칙 타입 색을 칠함 ----
+                # 초록=최종 채널(analyze 선택), 노랑=값바뀌나 게이트탈락, 파랑=시간/날짜,
+                # 주황=고정로고, 회색=텍스트/기타. → 2_fullocr 와 동일한 박스 집합.
+                TCOL = {"time": (70, 130, 255), "date": (70, 130, 255),
+                        "channelnum": (240, 210, 40), "othernum": (170, 170, 170),
+                        "text": (170, 170, 170)}
+                # 이 프레임에서 '채널로 선택된' 박스들 (chosen 슬롯의 현재 프레임 멤버)
+                chan_boxes = []
                 for s in slots:
-                    mem = next((m for m in s["mem"] if m["uid"] == uid), None)
-                    if mem is None:          # 현재 프레임에 이 슬롯 박스가 없으면 안 그림
-                        continue
-                    bx = mem["box"]
                     if s.get("chosen"):
-                        col, wd, lab = (0, 210, 0), 5, "CHANNEL(selected)"
-                    elif s["label"] == "channel":
-                        col, wd, lab = (240, 210, 40), 2, "candidate(rejected)"
+                        m = next((m for m in s["mem"] if m["uid"] == uid), None)
+                        if m:
+                            chan_boxes.append(m["box"])
+                near = lambda a, b: all(abs(a[i] - b[i]) <= 2 for i in range(4))
+                im4 = base.copy(); d = ImageDraw.Draw(im4)
+                for c in cand:               # 2_fullocr 와 같은 박스들
+                    b = c["bbox_xyxy"]; t = c.get("text", "")
+                    if any(near(b, cb) for cb in chan_boxes):
+                        col, wd, lab = (0, 210, 0), 5, "CHANNEL"
                     else:
-                        col, wd, lab = COL.get(s["label"], (170, 170, 170)), 2, None
-                    d.rectangle([int(v) for v in bx], outline=col, width=wd)
-                    if lab:                  # 채널/후보만 글자 라벨(파랑·주황·회색은 색만)
-                        _label_box(d, (bx[0], max(0, bx[1] - 20)), lab, col, Fsmall)
+                        col, wd, lab = TCOL.get(classify(t), (170, 170, 170)), 2, None
+                    d.rectangle([int(v) for v in b], outline=col, width=wd)
+                    if lab:                  # 채널만 글자 라벨(나머지는 색만 → 덜 어지럽게)
+                        _label_box(d, (b[0], max(0, b[1] - 20)), lab, col, Fsmall)
                 _label_box(d, (8, 8), "4) classify (green=selected channel, others excluded)",
                            (255, 255, 0), Ft)
                 lg = [("green=CHANNEL(selected)", (0, 210, 0)),
