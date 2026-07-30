@@ -39,8 +39,14 @@ def best_digit(text):
 
 def load_rec(model_dir):
     from paddleocr import TextRecognition
-    if model_dir and str(model_dir).lower() not in ("none", "") and Path(model_dir).exists():
+    want = model_dir and str(model_dir).lower() not in ("none", "")
+    if want and Path(model_dir).exists() and (Path(model_dir) / "inference.pdiparams").exists():
+        print(f"[eval] 파인튜닝 rec 사용: {model_dir}", flush=True)
         return TextRecognition(model_name="en_PP-OCRv4_mobile_rec", model_dir=str(model_dir))
+    if want:                                    # 경로 줬는데 없음 → 조용히 순정으로 새지 않게 경고
+        print(f"[eval] ⚠ 지정한 rec 경로 없음 → 순정으로 폴백: {model_dir}", flush=True)
+    else:
+        print("[eval] 순정 rec 사용", flush=True)
     return TextRecognition(model_name="en_PP-OCRv4_mobile_rec")
 
 
