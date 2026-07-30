@@ -45,6 +45,8 @@ def main():
                     help="force-read 변환 시각화(폴더당 N장): crop→padding→확대→읽기 스텝 저장")
     ap.add_argument("--viz-steps", type=int, default=0, metavar="N")
     ap.add_argument("--keep-staged", action="store_true")
+    ap.add_argument("--rec-model-dir", default="models/full_image_ocr/en_PP-OCRv4_mobile_rec_ft",
+                    help="파인튜닝된 full-OCR rec 디렉토리(있으면 사용). 순정으로 돌리려면 'none'")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -62,10 +64,22 @@ def main():
     print(f"images: {len(index)}  folders(sequences): {len(seqs)}", flush=True)
 
     # === 유일한 모델: FULL OCR ===
-    rc = P.sh([PY, f"{SRC}/run_paddleocr_export.py", "--images", flat, "--out", out / "full_ocr.json",
+    ocr_cmd = [PY, f"{SRC}/run_paddleocr_export.py", "--images", flat, "--out", out / "full_ocr.json",
                "--use-gpu", "--ocr-version", "PP-OCRv4", "--text-detection-model-name",
                "PP-OCRv4_mobile_det", "--text-recognition-model-name", "en_PP-OCRv4_mobile_rec",
-               "--progress-every", 200], env)
+               "--progress-every", 200]
+    # 파인튜닝된 rec가 있으면 그 가중치로 읽기 (det은 그대로). 'none'이면 순정.
+    rec_dir = str(args.rec_model_dir).strip()
+    if rec_dir.lower() not in ("", "none"):
+        rd = Path(rec_dir)
+        if not rd.is_absolute():
+            rd = Path(__file__).resolve().parent / rd
+        if (rd / "inference.pdiparams").exists():
+            ocr_cmd += ["--text-recognition-model-dir", str(rd)]
+            print(f"[slot] 파인튜닝 rec 사용: {rd}", flush=True)
+        else:
+            print(f"[slot] rec-model-dir 없음 → 순정 rec 사용 ({rd})", flush=True)
+    rc = P.sh(ocr_cmd, env)
     if rc != 0:
         raise SystemExit(f"[slot] full OCR 실패 (rc={rc})")
     cand = json.loads((out / "full_ocr.json").read_text())

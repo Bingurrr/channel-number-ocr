@@ -123,6 +123,7 @@ def create_paddle_ocr(
     ocr_version: str = "PP-OCRv4",
     text_detection_model_name: Optional[str] = None,
     text_recognition_model_name: Optional[str] = None,
+    text_recognition_model_dir: Optional[str] = None,
 ) -> Any:
     """Create a PaddleOCR instance while tolerating API differences."""
 
@@ -141,6 +142,9 @@ def create_paddle_ocr(
         model_kwargs["text_detection_model_name"] = text_detection_model_name
     if text_recognition_model_name:
         model_kwargs["text_recognition_model_name"] = text_recognition_model_name
+    # 파인튜닝된 rec 가중치를 쓰려면 로컬 inference 디렉토리를 지정 (det은 그대로).
+    if text_recognition_model_dir:
+        model_kwargs["text_recognition_model_dir"] = text_recognition_model_dir
 
     attempts = [
         {

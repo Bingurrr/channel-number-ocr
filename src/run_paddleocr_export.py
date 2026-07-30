@@ -25,6 +25,8 @@ def main() -> None:
     parser.add_argument("--ocr-version", default="PP-OCRv4")
     parser.add_argument("--text-detection-model-name", default=None)
     parser.add_argument("--text-recognition-model-name", default=None)
+    parser.add_argument("--text-recognition-model-dir", default=None,
+                        help="파인튜닝된 rec inference 디렉토리 (지정 시 이 가중치로 읽음)")
     parser.add_argument("--progress-every", type=int, default=10)
     args = parser.parse_args()
 
@@ -35,6 +37,7 @@ def main() -> None:
         ocr_version=args.ocr_version,
         text_detection_model_name=args.text_detection_model_name,
         text_recognition_model_name=args.text_recognition_model_name,
+        text_recognition_model_dir=args.text_recognition_model_dir,
     )
     images: List[Dict[str, Any]] = []
     started = time.time()
