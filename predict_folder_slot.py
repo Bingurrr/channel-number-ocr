@@ -356,7 +356,7 @@ def main():
 
     if args.viz_steps > 0:
         step_viz.render(by_id, seqs, per_folder3, meta, out, args.viz_steps,
-                        args.gt_from_filename, lambda s: _safe(s, root))
+                        args.gt_from_filename, lambda s: _safe(s, root), min_conf=args.min_conf)
 
     print(f"\n결과: {out}/per_frame.csv , profile_report.json  ({len(rows)}개)")
     if not args.keep_staged:

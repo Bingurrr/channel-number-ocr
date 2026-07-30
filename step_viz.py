@@ -120,7 +120,7 @@ def force_read_steps(img, box, sdir, read_val="", pad=0.2, min_height=120):
     up.save(sdir / "4_upscaled_read.jpg", quality=90)
 
 
-def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
+def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe, min_conf=0.3):
     try:
         from PIL import Image, ImageDraw
     except Exception:
@@ -128,7 +128,7 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
     F = _font(20); Ft = _font(26); Fsmall = _font(16)
     norm = lambda s: str(int(s)) if s else ""
     root_out = out / "step_viz"
-    CONF_THR = 0.5          # 2_fullocr / 4_classify 공통 신뢰도 게이트 (cluster 기본값과 동일)
+    CONF_THR = min_conf     # 파이프라인 --min-conf 와 동일 → 2/3/4 그림이 실제 탐색과 일치
 
     for g, (entry, frows, field) in per_folder.items():
         if not field:
@@ -136,7 +136,7 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
         ui = safe(Path(g).name if g not in ("", "(root)") else "root")
         ok_ids = [u for u in sorted(seqs.get(g, [])) if u in by_id]
         frames = [by_id[u] for u in ok_ids]
-        slots = cluster(frames, ok_ids)
+        slots = cluster(frames, ok_ids, conf_thr=min_conf)
         # 실제 파이프라인 결정과 일치시킴: analyze()가 고른 primary(+듀얼)만 진짜 채널.
         # 값이 바뀌어도(distinct>=2) 게이트/점수에서 탈락한 슬롯은 'candidate'로 표시.
         # 초록은 '최종 채널 primary 딱 하나'만. 듀얼은 별도 표시(초록 과다 방지).
