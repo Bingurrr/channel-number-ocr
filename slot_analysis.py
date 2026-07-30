@@ -56,7 +56,8 @@ def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr
                         "cxs": [], "cys": [], "hs": []}
                 slots.append(best)
             best["items"].append({"frame": fi, "uid": ids[fi], "text": t, "box": b,
-                                  "type": classify(t), "value": best_digit(t)})
+                                  "type": classify(t), "value": best_digit(t),
+                                  "conf": float(c.get("ocr_conf", 0.5) or 0.5)})
             best["boxes"].append(b); best["cxs"].append(cx); best["cys"].append(cy)
             best["hs"].append(hgt)
             k = len(best["items"])
@@ -91,11 +92,17 @@ def _metrics(s, n, W0, H0):
         score *= 0.5
     if h_cv > 0.35:
         score *= 0.6
+    # 프레임별 채널값 + 신뢰도(같은 프레임에 여러 후보면 최고 conf 채택)
+    pf, pfc = {}, {}
+    for m in items:
+        if m["type"] == "channelnum" and m["value"]:
+            c = m.get("conf", 0.5)
+            if m["uid"] not in pfc or c > pfc[m["uid"]]:
+                pf[m["uid"]] = m["value"]; pfc[m["uid"]] = c
     return {"box": [round(v, 1) for v in box], "score": round(score, 3), "distinct": distinct,
             "present": present, "n": n, "aspect": round(aspect, 2), "area": round(area, 4),
             "h": h, "cx": (box[0] + box[2]) / 2 / W0, "cy": (box[1] + box[3]) / 2 / H0,
-            "chan_ratio": round(chan_ratio, 2),
-            "per_frame": {m["uid"]: m["value"] for m in items if m["type"] == "channelnum" and m["value"]},
+            "chan_ratio": round(chan_ratio, 2), "per_frame": pf, "per_frame_conf": pfc,
             "sample": [m["text"] for m in items[:5]], "vertical_neighbor": False}
 
 

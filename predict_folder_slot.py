@@ -51,6 +51,9 @@ def main():
                     help="슬롯 클러스터링 전 OCR 신뢰도 임계값(낮추면 none↓, 오답↑ 가능)")
     ap.add_argument("--force-answer", action="store_true",
                     help="못읽은 프레임을 rec-only(det 생략)로 강제 읽기 → none 없애기")
+    ap.add_argument("--both-channel", action="store_true",
+                    help="채널번호가 2곳(A/B)에 뜨는 UI: 둘 다 저장(ch1/ch2)하고, 한쪽이 "
+                         "none이거나 conf 낮으면 다른쪽 값 사용")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -98,13 +101,36 @@ def main():
             continue
         primary, duals, allm = SA.analyze(frames, ok_uids, conf_thr=args.min_conf)
         if primary:
-            merged = dict(primary["per_frame"])
-            for d in duals:                                    # 듀얼로 primary 빈칸 채움
+            p_pf = primary["per_frame"]; p_conf = primary.get("per_frame_conf", {})
+            # 듀얼(2번째 채널박스) 값/신뢰도 병합 (여러 듀얼이면 프레임별 최고 conf)
+            d_pf, d_conf = {}, {}
+            for d in duals:
+                dc = d.get("per_frame_conf", {})
                 for uid, v in d["per_frame"].items():
+                    c = dc.get(uid, 0.5)
+                    if uid not in d_conf or c > d_conf[uid]:
+                        d_pf[uid] = v; d_conf[uid] = c
+            if args.both_channel and d_pf:
+                # A/B 교차: none이면 다른쪽, 둘 다 있으면 conf 높은쪽
+                final = {}
+                for uid in set(p_pf) | set(d_pf):
+                    v1, v2 = p_pf.get(uid), d_pf.get(uid)
+                    if v1 and v2:
+                        final[uid] = v1 if p_conf.get(uid, 0) >= d_conf.get(uid, 0) else v2
+                    else:
+                        final[uid] = v1 or v2
+                field = {"median_box": primary["box"], "per_frame": final,
+                         "per_frame_1": dict(p_pf), "per_frame_2": dict(d_pf),
+                         "box2": duals[0]["box"] if duals else None,
+                         "score": primary["score"], "distinct": primary["distinct"],
+                         "duals": [d["box"] for d in duals], "both": True}
+            else:
+                merged = dict(p_pf)
+                for uid, v in d_pf.items():                     # 기존: primary 빈칸만 채움
                     merged.setdefault(uid, v)
-            field = {"median_box": primary["box"], "per_frame": merged,
-                     "score": primary["score"], "distinct": primary["distinct"],
-                     "duals": [d["box"] for d in duals]}
+                field = {"median_box": primary["box"], "per_frame": merged,
+                         "score": primary["score"], "distinct": primary["distinct"],
+                         "duals": [d["box"] for d in duals], "both": False}
             recover_field_values(frames, ok_uids, field)
         else:
             field = None
@@ -195,19 +221,24 @@ def main():
         shutil.rmtree(sub, ignore_errors=True)
 
     # === 출력 ===
+    cols = ["folder", "frame", "channel_number"] + (["channel_number_1", "channel_number_2"] if args.both_channel else [])
     rows, per_folder3 = [], {}
     for g, (entry, field) in per_folder.items():
         frows = []
         if field:
             for uid, val in sorted(field["per_frame"].items()):
                 r = {"folder": g, "frame": meta.get(uid, uid), "channel_number": val}
+                if args.both_channel:
+                    r["channel_number_1"] = field.get("per_frame_1", {}).get(uid, "")
+                    r["channel_number_2"] = field.get("per_frame_2", {}).get(uid, "")
                 rows.append(r); frows.append(r)
         per_folder3[g] = (entry, frows, field)
     with (out / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=["folder", "frame", "channel_number"]); w.writeheader(); w.writerows(rows)
+        w = csv.DictWriter(f, fieldnames=cols); w.writeheader(); w.writerows(rows)
     (out / "profile_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
 
     if args.split_output:
+        gcols = [c for c in cols if c != "folder"]
         used = {}
         for g, (entry, frows, _f) in per_folder3.items():
             nm = _safe(Path(g).name if g not in ("", "(root)") else root.name, root)
@@ -217,9 +248,9 @@ def main():
             gd = out / nm; gd.mkdir(parents=True, exist_ok=True)
             (gd / "profile_report.json").write_text(json.dumps(entry, ensure_ascii=False, indent=2))
             with (gd / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
-                w = csv.DictWriter(f, fieldnames=["frame", "channel_number"]); w.writeheader()
+                w = csv.DictWriter(f, fieldnames=gcols); w.writeheader()
                 for r in frows:
-                    w.writerow({"frame": r["frame"], "channel_number": r["channel_number"]})
+                    w.writerow({c: r.get(c, "") for c in gcols})
 
     # === 정성 이미지 (성공 N + 실패 전부, UI별 폴더) ===
     if not args.no_qualitative:
