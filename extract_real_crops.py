@@ -20,6 +20,7 @@ import argparse
 import csv
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from PIL import Image, ImageFile
@@ -30,8 +31,9 @@ IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def gt_of(stem):
-    d = "".join(c for c in str(stem) if c.isdigit())
-    return str(int(d)) if d else ""
+    # 파이프라인 gt_from_name과 동일: '맨 앞' 숫자만 (101_2 -> 101, 모든 숫자 이어붙이면 안됨)
+    m = re.match(r"\s*(\d+)", str(stem))
+    return str(int(m.group(1))) if m else ""
 
 
 def crop_box(img, box, pad, pad_right):
