@@ -140,9 +140,16 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
         except Exception:
             chosen_c = []
         for s in slots:
-            scx = (s["box"][0] + s["box"][2]) / 2; scy = (s["box"][1] + s["box"][3]) / 2
-            s["chosen"] = any((scx - cx) ** 2 + (scy - cy) ** 2 < (0.02 * 1280) ** 2
-                              for cx, cy in chosen_c)
+            s["chosen"] = False
+        # 각 선택 중심마다 '가장 가까운 슬롯 하나'만 채널로 → 다중 초록 방지
+        for cx, cy in chosen_c:
+            near = min(slots, key=lambda s: ((s["box"][0] + s["box"][2]) / 2 - cx) ** 2
+                       + ((s["box"][1] + s["box"][3]) / 2 - cy) ** 2, default=None) if slots else None
+            if near is not None:
+                dc = ((near["box"][0] + near["box"][2]) / 2 - cx) ** 2 + \
+                     ((near["box"][1] + near["box"][3]) / 2 - cy) ** 2
+                if dc < (0.03 * 1280) ** 2:
+                    near["chosen"] = True
         # 채널 필드 슬롯 = median_box 중심에 가장 가까운 슬롯
         fb = field["median_box"]; fcx = (fb[0] + fb[2]) / 2; fcy = (fb[1] + fb[3]) / 2
         fld_slot = min(slots, key=lambda s: (s["box"][0] + s["box"][2]) / 2 - fcx if False else
@@ -199,26 +206,28 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
                 im3.save(sdir / "3_slots.jpg", quality=90)
 
                 # ---- 4) classify: rule-based exclusion (color = type) ----
-                # 초록=최종 채널(analyze가 선택), 노랑=값은 바뀌지만 게이트 탈락 후보,
-                # 파랑=시간, 주황=고정로고, 회색=텍스트.
+                # 이 프레임에 '실제로 존재하는' 박스만 그림(빈 영역 유령박스 방지).
+                # 초록=최종 채널(analyze 선택), 노랑=값바뀌나 게이트탈락, 파랑=시간,
+                # 주황=고정로고, 회색=텍스트. 라벨 글자는 채널/후보에만(잡음 방지).
+                COL = {"time": (70, 130, 255), "constant": (255, 150, 0),
+                       "text": (170, 170, 170), "other": (170, 170, 170)}
                 im4 = base.copy(); d = ImageDraw.Draw(im4)
-                LAB = {"time": ("time(colon)", (70, 130, 255)),
-                       "constant": ("logo(fixed value)", (255, 150, 0)),
-                       "text": ("text(name)", (170, 170, 170)),
-                       "other": ("other", (170, 170, 170))}
                 for s in slots:
+                    mem = next((m for m in s["mem"] if m["uid"] == uid), None)
+                    if mem is None:          # 현재 프레임에 이 슬롯 박스가 없으면 안 그림
+                        continue
+                    bx = mem["box"]
                     if s.get("chosen"):
-                        txt, col, wd = "CHANNEL(selected)", (0, 210, 0), 5
+                        col, wd, lab = (0, 210, 0), 5, "CHANNEL(selected)"
                     elif s["label"] == "channel":
-                        txt, col, wd = "candidate(rejected by gate)", (240, 210, 40), 2
+                        col, wd, lab = (240, 210, 40), 2, "candidate(rejected)"
                     else:
-                        txt, col = LAB.get(s["label"], ("other", (170, 170, 170))); wd = 2
-                    bx = s["box"]
+                        col, wd, lab = COL.get(s["label"], (170, 170, 170)), 2, None
                     d.rectangle([int(v) for v in bx], outline=col, width=wd)
-                    _label_box(d, (bx[0], max(0, bx[1] - 20)), txt, col, Fsmall)
+                    if lab:                  # 채널/후보만 글자 라벨(파랑·주황·회색은 색만)
+                        _label_box(d, (bx[0], max(0, bx[1] - 20)), lab, col, Fsmall)
                 _label_box(d, (8, 8), "4) classify (green=selected channel, others excluded)",
                            (255, 255, 0), Ft)
-                # 범례
                 lg = [("green=CHANNEL(selected)", (0, 210, 0)),
                       ("yellow=changing but rejected", (240, 210, 40)),
                       ("blue=time", (70, 130, 255)), ("orange=logo(fixed)", (255, 150, 0)),
