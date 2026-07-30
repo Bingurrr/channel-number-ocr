@@ -22,6 +22,12 @@ import statistics as st
 from temporal_profile_select import classify, best_digit, digits
 
 
+def _cnorm(v):
+    """채널값 정규화: '002' 와 '2' 를 같은 채널로 (앞의 0 제거)."""
+    s = str(v)
+    return str(int(s)) if s.isdigit() else s
+
+
 def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr=0.3):
     """Greedy clustering by (position within pos_thr) AND (glyph height within size gate).
 
@@ -73,8 +79,8 @@ def _metrics(s, n, W0, H0):
     chan_ratio = sum(t == "channelnum" for t in types) / max(1, len(types))
     text_ratio = sum(t == "text" for t in types) / max(1, len(types))
     time_ratio = sum(t in ("time", "date") for t in types) / max(1, len(types))
-    vals = [m["value"] for m in items if m["type"] == "channelnum" and m["value"]]
-    distinct = len(set(vals))
+    vals = [_cnorm(m["value"]) for m in items if m["type"] == "channelnum" and m["value"]]
+    distinct = len(set(vals))         # 002/2 같은 채널로 (앞 0 무시)
     box = [st.median([b[i] for b in s["boxes"]]) for i in range(4)]
     w = max(1.0, box[2] - box[0]); h = max(1.0, box[3] - box[1])
     aspect = w / h; area = (w * h) / (W0 * H0)
@@ -88,8 +94,13 @@ def _metrics(s, n, W0, H0):
         score *= 0.15
     if area > 0.06:
         score *= 0.15
-    if pos_std > 0.03:
-        score *= 0.5
+    # 위치 안정성: 고정 박스 강하게 선호, '움직이는 박스'는 강하게 억제
+    if pos_std > 0.06:
+        score *= 0.2            # 많이 움직임 → 이동박스 억제 (skylife)
+    elif pos_std > 0.03:
+        score *= 0.55
+    else:
+        score *= 1.25           # 위치 고정 → 보너스
     if h_cv > 0.35:
         score *= 0.6
     # 프레임별 채널값 + 신뢰도(같은 프레임에 여러 후보면 최고 conf 채택)
@@ -98,11 +109,12 @@ def _metrics(s, n, W0, H0):
         if m["type"] == "channelnum" and m["value"]:
             c = m.get("conf", 0.5)
             if m["uid"] not in pfc or c > pfc[m["uid"]]:
-                pf[m["uid"]] = m["value"]; pfc[m["uid"]] = c
+                pf[m["uid"]] = _cnorm(m["value"]); pfc[m["uid"]] = c
     return {"box": [round(v, 1) for v in box], "score": round(score, 3), "distinct": distinct,
             "present": present, "n": n, "aspect": round(aspect, 2), "area": round(area, 4),
             "h": h, "cx": (box[0] + box[2]) / 2 / W0, "cy": (box[1] + box[3]) / 2 / H0,
-            "chan_ratio": round(chan_ratio, 2), "per_frame": pf, "per_frame_conf": pfc,
+            "chan_ratio": round(chan_ratio, 2), "pos_std": round(pos_std, 4),
+            "per_frame": pf, "per_frame_conf": pfc,
             "sample": [m["text"] for m in items[:5]], "vertical_neighbor": False}
 
 
@@ -125,7 +137,7 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
             if not v or float(c.get("ocr_conf", 0.5) or 0.5) < conf_thr:
                 continue
             cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
-            by_val.setdefault(v, []).append((cx, cy, float(c.get("ocr_conf", 0.5) or 0.5)))
+            by_val.setdefault(_cnorm(v), []).append((cx, cy, float(c.get("ocr_conf", 0.5) or 0.5)))
         best = None
         for v, pts in by_val.items():
             distinct = []                                  # 서로 멀리 떨어진 위치만
