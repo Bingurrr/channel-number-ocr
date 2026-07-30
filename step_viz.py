@@ -130,6 +130,19 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
         ok_ids = [u for u in sorted(seqs.get(g, [])) if u in by_id]
         frames = [by_id[u] for u in ok_ids]
         slots = cluster(frames, ok_ids)
+        # 실제 파이프라인 결정과 일치시킴: analyze()가 고른 primary(+듀얼)만 진짜 채널.
+        # 값이 바뀌어도(distinct>=2) 게이트/점수에서 탈락한 슬롯은 'candidate'로 표시.
+        try:
+            import slot_analysis as SA
+            _prim, _duals, _ = SA.analyze(frames, ok_ids)
+            chosen_c = [((m["box"][0] + m["box"][2]) / 2, (m["box"][1] + m["box"][3]) / 2)
+                        for m in ([_prim] + _duals if _prim else [])]
+        except Exception:
+            chosen_c = []
+        for s in slots:
+            scx = (s["box"][0] + s["box"][2]) / 2; scy = (s["box"][1] + s["box"][3]) / 2
+            s["chosen"] = any((scx - cx) ** 2 + (scy - cy) ** 2 < (0.02 * 1280) ** 2
+                              for cx, cy in chosen_c)
         # 채널 필드 슬롯 = median_box 중심에 가장 가까운 슬롯
         fb = field["median_box"]; fcx = (fb[0] + fb[2]) / 2; fcy = (fb[1] + fb[3]) / 2
         fld_slot = min(slots, key=lambda s: (s["box"][0] + s["box"][2]) / 2 - fcx if False else
@@ -186,23 +199,30 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
                 im3.save(sdir / "3_slots.jpg", quality=90)
 
                 # ---- 4) classify: rule-based exclusion (color = type) ----
+                # 초록=최종 채널(analyze가 선택), 노랑=값은 바뀌지만 게이트 탈락 후보,
+                # 파랑=시간, 주황=고정로고, 회색=텍스트.
                 im4 = base.copy(); d = ImageDraw.Draw(im4)
-                LAB = {"channel": ("CHANNEL(value changes)", (0, 210, 0)),
-                       "time": ("time(colon)", (70, 130, 255)),
+                LAB = {"time": ("time(colon)", (70, 130, 255)),
                        "constant": ("logo(fixed value)", (255, 150, 0)),
                        "text": ("text(name)", (170, 170, 170)),
                        "other": ("other", (170, 170, 170))}
                 for s in slots:
-                    txt, col = LAB.get(s["label"], ("other", (170, 170, 170)))
+                    if s.get("chosen"):
+                        txt, col, wd = "CHANNEL(selected)", (0, 210, 0), 5
+                    elif s["label"] == "channel":
+                        txt, col, wd = "candidate(rejected by gate)", (240, 210, 40), 2
+                    else:
+                        txt, col = LAB.get(s["label"], ("other", (170, 170, 170))); wd = 2
                     bx = s["box"]
-                    d.rectangle([int(v) for v in bx], outline=col,
-                                width=5 if s["label"] == "channel" else 2)
-                    _label_box(d, (bx[0], max(0, bx[1] - 20)), txt, col, F)
-                _label_box(d, (8, 8), "4) classify (green=channel, others excluded)",
+                    d.rectangle([int(v) for v in bx], outline=col, width=wd)
+                    _label_box(d, (bx[0], max(0, bx[1] - 20)), txt, col, Fsmall)
+                _label_box(d, (8, 8), "4) classify (green=selected channel, others excluded)",
                            (255, 255, 0), Ft)
                 # 범례
-                lg = [("green=CHANNEL", (0, 210, 0)), ("blue=time", (70, 130, 255)),
-                      ("orange=logo(fixed)", (255, 150, 0)), ("gray=text", (170, 170, 170))]
+                lg = [("green=CHANNEL(selected)", (0, 210, 0)),
+                      ("yellow=changing but rejected", (240, 210, 40)),
+                      ("blue=time", (70, 130, 255)), ("orange=logo(fixed)", (255, 150, 0)),
+                      ("gray=text", (170, 170, 170))]
                 for li, (lt, lc) in enumerate(lg):
                     _label_box(d, (8, 44 + li * 24), lt, lc, F)
                 im4.save(sdir / "4_classify.jpg", quality=90)
