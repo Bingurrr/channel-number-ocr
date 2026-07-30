@@ -22,8 +22,13 @@ import statistics as st
 from temporal_profile_select import classify, best_digit, digits
 
 
-def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8):
-    """Greedy clustering by (position within pos_thr) AND (glyph height within size gate)."""
+def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr=0.3):
+    """Greedy clustering by (position within pos_thr) AND (glyph height within size gate).
+
+    conf_thr drops low-confidence OCR false positives (hallucinated digits on dark
+    regions, ocr_conf ~0.1) so they never seed spurious slots. Kept conservative
+    (0.3) so faint-but-real channel numbers survive; force-read recovers the rest.
+    """
     slots = []
     for fi, im in enumerate(frames):
         W = float(im.get("image_width") or 1280) or 1280
@@ -31,6 +36,8 @@ def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8):
         for c in im.get("candidates", []):
             b = c.get("bbox_xyxy"); t = c.get("text", "")
             if not b or len(b) != 4 or not digits(t):
+                continue
+            if float(c.get("ocr_conf", 1.0) or 0.0) < conf_thr:   # 저신뢰 헛읽음 제외
                 continue
             cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
             hgt = (b[3] - b[1]) / H
