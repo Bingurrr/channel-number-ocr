@@ -44,8 +44,9 @@ def best_digit(text):
 
 def load_recognizer(model_dir):
     from paddleocr import TextRecognition
+    # model_dir만 주면 paddlex가 model_name 불일치로 assert → name도 함께 전달.
     if model_dir and Path(model_dir).exists():
-        return TextRecognition(model_dir=str(model_dir))
+        return TextRecognition(model_name="en_PP-OCRv4_mobile_rec", model_dir=str(model_dir))
     return TextRecognition(model_name="en_PP-OCRv4_mobile_rec")
 
 
