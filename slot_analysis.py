@@ -99,12 +99,16 @@ def _metrics(s, n, W0, H0):
             "sample": [m["text"] for m in items[:5]], "vertical_neighbor": False}
 
 
-def analyze(frames, ids, pos_thr=0.04):
-    """Return (primary, duals, all_sorted). primary = channel field slot (or None)."""
+def analyze(frames, ids, pos_thr=0.04, conf_thr=0.3):
+    """Return (primary, duals, all_sorted). primary = channel field slot (or None).
+
+    conf_thr는 저신뢰 OCR 후보를 클러스터링 전에 걸러냄. 낮추면 none(미탐지)이 줄지만
+    노이즈 숫자가 통과해 오답이 늘 수 있으니 값을 바꿔가며 확인.
+    """
     n = len(frames)
     W0 = float(frames[0].get("image_width") or 1280) or 1280
     H0 = float(frames[0].get("image_height") or 720) or 720
-    slots = cluster_slots(frames, ids, pos_thr)
+    slots = cluster_slots(frames, ids, pos_thr, conf_thr=conf_thr)
     ms = [_metrics(s, n, W0, H0) for s in slots]
     # 세로 채널리스트 페널티: 같은 x + 같은 높이 + 세로 이웃 = 이전/다음 채널 리스트
     for a in ms:

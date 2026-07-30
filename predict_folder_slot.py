@@ -47,6 +47,10 @@ def main():
     ap.add_argument("--keep-staged", action="store_true")
     ap.add_argument("--rec-model-dir", default="models/full_image_ocr/en_PP-OCRv4_mobile_rec_ft",
                     help="파인튜닝된 full-OCR rec 디렉토리(있으면 사용). 순정으로 돌리려면 'none'")
+    ap.add_argument("--min-conf", type=float, default=0.3,
+                    help="슬롯 클러스터링 전 OCR 신뢰도 임계값(낮추면 none↓, 오답↑ 가능)")
+    ap.add_argument("--force-answer", action="store_true",
+                    help="못읽은 프레임을 rec-only(det 생략)로 강제 읽기 → none 없애기")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -92,7 +96,7 @@ def main():
         frames = [by_id[u] for u in ok_uids]
         if not frames:
             continue
-        primary, duals, allm = SA.analyze(frames, ok_uids)
+        primary, duals, allm = SA.analyze(frames, ok_uids, conf_thr=args.min_conf)
         if primary:
             merged = dict(primary["per_frame"])
             for d in duals:                                    # 듀얼로 primary 빈칸 채움
@@ -138,9 +142,21 @@ def main():
                                 pass
                     unread.append(uid)
         if unread:
-            rc = P.sh([PY, f"{SRC}/fullocr_crops.py", "--images", sub, "--yolo-label-dir", field_lbl,
-                       "--out", out / "field_read.json", "--pad", "0.2", "--min-height", "48",
-                       "--progress-every", "200"], env)
+            if args.force_answer:
+                # rec-only(det 생략) 강제 읽기 → none 제거. 파인튜닝 rec 사용.
+                rd = Path(rec_dir) if rec_dir.lower() not in ("", "none") else None
+                if rd is not None and not rd.is_absolute():
+                    rd = Path(__file__).resolve().parent / rd
+                rr = [PY, f"{SRC}/rec_only_read.py", "--images", sub, "--yolo-label-dir", field_lbl,
+                      "--out", out / "field_read.json", "--pad", "0.2", "--min-height", "120",
+                      "--progress-every", "200"]
+                if rd is not None and (rd / "inference.pdiparams").exists():
+                    rr += ["--rec-model-dir", str(rd)]
+                rc = P.sh(rr, env)
+            else:
+                rc = P.sh([PY, f"{SRC}/fullocr_crops.py", "--images", sub, "--yolo-label-dir", field_lbl,
+                           "--out", out / "field_read.json", "--pad", "0.2", "--min-height", "48",
+                           "--progress-every", "200"], env)
             if rc == 0 and (out / "field_read.json").exists():
                 fr = json.loads((out / "field_read.json").read_text())
                 readval = {}
