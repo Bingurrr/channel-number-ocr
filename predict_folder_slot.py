@@ -191,6 +191,57 @@ def main():
                 for r in frows:
                     w.writerow({"frame": r["frame"], "channel_number": r["channel_number"]})
 
+    # === 정성 이미지 (성공 N + 실패 전부, UI별 폴더) ===
+    if not args.no_qualitative:
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            Image = None
+        if Image is not None:
+            norm = lambda s: str(int(s)) if s else ""
+            saved, usedq = 0, {}
+            for g, (entry, frows, field) in per_folder3.items():
+                if not field:
+                    continue
+                box = [int(v) for v in field["median_box"]]; pf = field["per_frame"]
+                allu = [u for u in sorted(seqs.get(g, [])) if u in by_id]
+                oks, fails = [], []
+                for uid in allu:
+                    pred = P._dg(pf.get(uid, ""))
+                    if args.gt_from_filename:
+                        gt = P.gt_from_name(meta.get(uid, uid))
+                        isf = (not pred) or (gt and norm(pred) != norm(gt))
+                    else:
+                        isf = not pred
+                    (fails if isf else oks).append(uid)
+                step = max(1, len(oks) // max(1, args.samples_per_folder))
+                draw = [(u, False) for u in oks[::step][:args.samples_per_folder]] + [(u, True) for u in fails]
+                if not draw:
+                    continue
+                nm = _safe(Path(g).name if g not in ("", "(root)") else root.name, root)
+                while nm in usedq and usedq[nm] != g:
+                    nm += "_x"
+                usedq[nm] = g
+                qd = (out / nm / "qualitative") if args.split_output else (out / "qualitative" / _safe(g, root))
+                fdir = qd / "_failures"; qd.mkdir(parents=True, exist_ok=True)
+                if fails:
+                    fdir.mkdir(parents=True, exist_ok=True)
+                for uid, isf in draw:
+                    try:
+                        img = Image.open(by_id[uid].get("image_path")).convert("RGB")
+                    except Exception:
+                        continue
+                    d = ImageDraw.Draw(img); val = pf.get(uid, "") or "(none)"
+                    col = (255, 0, 0) if isf else (0, 200, 0)
+                    d.rectangle(box, outline=col, width=3)
+                    lab = f"ch:{val}"
+                    if isf and args.gt_from_filename:
+                        lab += f" (gt:{P.gt_from_name(meta.get(uid, uid))})"
+                    d.text((box[0], max(0, box[1] - 14)), lab, fill=col)
+                    img.save((fdir if isf else qd) / f"{meta.get(uid, uid)}.jpg", quality=88)
+                    saved += 1
+            print(f"정성 이미지 {saved}장 (성공 샘플 + _failures/ 실패 전부)", flush=True)
+
     print("\n채널 필드(폴더별):")
     for r in report:
         dm = f"  +듀얼{len(r['dual_boxes'])}" if r["dual_boxes"] else ""
