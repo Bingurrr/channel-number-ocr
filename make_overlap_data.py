@@ -105,8 +105,8 @@ def tight_crop(im, bbox, rng):
     """Crop around the overlay with a small margin (여백 최소화, 겹침은 남김)."""
     W, H = im.size
     x1, y1, x2, y2 = bbox
-    px = (x2 - x1) * rng.uniform(0.06, 0.16)
-    py = (y2 - y1) * rng.uniform(0.10, 0.22)
+    px = (x2 - x1) * rng.uniform(0.15, 0.30)
+    py = (y2 - y1) * rng.uniform(0.22, 0.42)
     return im.crop((max(0, int(x1 - px)), max(0, int(y1 - py)),
                     min(W, int(x2 + px)), min(H, int(y2 + py))))
 
