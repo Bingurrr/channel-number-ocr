@@ -110,7 +110,11 @@ def _metrics(s, n, W0, H0):
             c = m.get("conf", 0.5)
             if m["uid"] not in pfc or c > pfc[m["uid"]]:
                 pf[m["uid"]] = _cnorm(m["value"]); pfc[m["uid"]] = c
-    return {"box": [round(v, 1) for v in box], "score": round(score, 3), "distinct": distinct,
+    # 읽기 신뢰도 반영: 깨끗하게 읽히는 슬롯 선호 → 방송사 로고 위(저conf) 억제
+    avg_conf = (sum(pfc.values()) / len(pfc)) if pfc else 0.5
+    score *= (0.4 + 0.6 * avg_conf)
+    return {"box": [round(v, 1) for v in box], "score": round(score, 3),
+            "avg_conf": round(avg_conf, 3), "distinct": distinct,
             "present": present, "n": n, "aspect": round(aspect, 2), "area": round(area, 4),
             "h": h, "cx": (box[0] + box[2]) / 2 / W0, "cy": (box[1] + box[3]) / 2 / H0,
             "chan_ratio": round(chan_ratio, 2), "pos_std": round(pos_std, 4),
