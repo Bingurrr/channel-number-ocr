@@ -29,10 +29,21 @@ EXTRA = ["/home1/irteam/.config/Ultralytics/Arial.ttf"]
 KOREAN_FONT_DIR = "/home/irteam/teacher_model/assets/google_fonts/ofl/gothica1"
 
 ENG = ["KBS", "MBC", "SBS", "EBS", "JTBC", "TVN", "OCN", "YTN", "MBN", "CH", "HD",
-       "UHD", "SKY", "BTV", "News", "Sports", "Movie", "Drama", "Kids", "Live"]
+       "UHD", "SKY", "BTV", "News", "Sports", "Movie", "Drama", "Kids", "Live",
+       "TV", "Plus", "World", "Home", "Life", "Gold", "Prime", "Star", "One"]
 KOR = ["뉴스", "드라마", "영화", "스포츠", "예능", "다큐", "음악", "교육", "어린이", "만화",
        "홈쇼핑", "쇼핑", "특집", "생방송", "시사", "경제", "여행", "요리", "건강", "연예",
-       "방송", "재방송", "아침", "주말", "게임", "바둑", "낚시", "키즈", "가요", "코미디"]
+       "방송", "재방송", "게임", "바둑", "낚시", "키즈", "가요", "코미디", "골프", "낚시"]
+_CONS = "bcdfghjklmnpqrstvwxyz"
+_VOW = "aeiou"
+
+
+def rand_eng(rng):
+    """간단하고 읽기 쉬운(발음 가능한) 랜덤 영어 단어 — 고정 목록 반복 대신 다양성."""
+    w = "".join(rng.choice(_CONS) + rng.choice(_VOW) + (rng.choice(_CONS) if rng.random() < 0.35 else "")
+                for _ in range(rng.randint(2, 4)))
+    r = rng.random()
+    return w.upper() if r < 0.4 else (w.capitalize() if r < 0.85 else w)
 WHITES = [(255, 255, 255), (248, 248, 248), (240, 240, 240), (250, 248, 245),
           (245, 248, 255), (236, 238, 236)]
 COLORS = WHITES + [(255, 235, 130), (255, 215, 0), (200, 230, 255), (180, 220, 255)]
@@ -57,13 +68,14 @@ def build_tokens(rng):
     """Return [(text, type), ...] in draw order and the Latin-only label."""
     num = rand_number(rng)
     r = rng.random()
-    if r < 0.30:                       # 숫자 단독
+    if r < 0.25:                       # 숫자 단독
         toks = [(num, "num")]
-    elif r < 0.62:                     # 한국어 동반 (자연 단어)
+    elif r < 0.43:                     # 한국어 동반 (18%로 줄임)
         comp = (rng.choice(KOR), "kor")   # 65% 텍스트-왼쪽 → 숫자 오른쪽 치우침
         toks = [comp, (num, "num")] if rng.random() < 0.65 else [(num, "num"), comp]
-    else:                              # 영어 동반
-        comp = (rng.choice(ENG), "eng")
+    else:                              # 영어 동반 (57%로 늘림, 랜덤단어 위주)
+        word = rng.choice(ENG) if rng.random() < 0.35 else rand_eng(rng)   # 65% 랜덤
+        comp = (word, "eng")
         toks = [comp, (num, "num")] if rng.random() < 0.65 else [(num, "num"), comp]
     label = " ".join(t for t, ty in toks if ty in ("num", "eng"))
     return toks, label
