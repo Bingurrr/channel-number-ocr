@@ -37,8 +37,12 @@ def _font(sz):
     return ImageFont.load_default()
 
 
-def cluster(frames, ids, dist_thr=0.05):
-    """Same position clustering as the profiler; returns slots with box/values/type."""
+def cluster(frames, ids, dist_thr=0.05, conf_thr=0.5):
+    """Same position clustering as the profiler; returns slots with box/values/type.
+
+    conf_thr drops low-confidence OCR false positives (e.g. hallucinated digits on
+    dark/empty regions with ocr_conf ~0.1) so they don't clutter the visualization.
+    """
     cl = []
     for fi, im in enumerate(frames):
         W = float(im.get("image_width") or 1280) or 1280
@@ -46,6 +50,8 @@ def cluster(frames, ids, dist_thr=0.05):
         for c in im.get("candidates", []):
             b = c.get("bbox_xyxy"); t = c.get("text", "")
             if not b or len(b) != 4 or not digits(t):
+                continue
+            if float(c.get("ocr_conf", 1.0) or 0.0) < conf_thr:   # 저신뢰 헛읽음 제외
                 continue
             cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
             best, bd = None, dist_thr
