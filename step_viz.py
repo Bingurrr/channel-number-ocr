@@ -139,24 +139,29 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
         slots = cluster(frames, ok_ids)
         # 실제 파이프라인 결정과 일치시킴: analyze()가 고른 primary(+듀얼)만 진짜 채널.
         # 값이 바뀌어도(distinct>=2) 게이트/점수에서 탈락한 슬롯은 'candidate'로 표시.
+        # 초록은 '최종 채널 primary 딱 하나'만. 듀얼은 별도 표시(초록 과다 방지).
         try:
             import slot_analysis as SA
             _prim, _duals, _ = SA.analyze(frames, ok_ids)
-            chosen_c = [((m["box"][0] + m["box"][2]) / 2, (m["box"][1] + m["box"][3]) / 2)
-                        for m in ([_prim] + _duals if _prim else [])]
+            prim_c = ((_prim["box"][0] + _prim["box"][2]) / 2,
+                      (_prim["box"][1] + _prim["box"][3]) / 2) if _prim else None
+            dual_c = [((m["box"][0] + m["box"][2]) / 2, (m["box"][1] + m["box"][3]) / 2)
+                      for m in _duals]
         except Exception:
-            chosen_c = []
+            prim_c, dual_c = None, []
         for s in slots:
-            s["chosen"] = False
-        # 각 선택 중심마다 '가장 가까운 슬롯 하나'만 채널로 → 다중 초록 방지
-        for cx, cy in chosen_c:
-            near = min(slots, key=lambda s: ((s["box"][0] + s["box"][2]) / 2 - cx) ** 2
-                       + ((s["box"][1] + s["box"][3]) / 2 - cy) ** 2, default=None) if slots else None
-            if near is not None:
-                dc = ((near["box"][0] + near["box"][2]) / 2 - cx) ** 2 + \
-                     ((near["box"][1] + near["box"][3]) / 2 - cy) ** 2
-                if dc < (0.03 * 1280) ** 2:
-                    near["chosen"] = True
+            s["chosen"] = False; s["is_dual"] = False
+        _sc = lambda s: ((s["box"][0] + s["box"][2]) / 2, (s["box"][1] + s["box"][3]) / 2)
+        _nearest = lambda cx, cy: min(
+            slots, key=lambda s: (_sc(s)[0] - cx) ** 2 + (_sc(s)[1] - cy) ** 2, default=None) if slots else None
+        if prim_c:
+            n = _nearest(*prim_c)
+            if n and (_sc(n)[0] - prim_c[0]) ** 2 + (_sc(n)[1] - prim_c[1]) ** 2 < (0.03 * 1280) ** 2:
+                n["chosen"] = True                       # 초록 = 오직 primary
+        for cx, cy in dual_c:
+            n = _nearest(cx, cy)
+            if n and not n["chosen"] and (_sc(n)[0] - cx) ** 2 + (_sc(n)[1] - cy) ** 2 < (0.03 * 1280) ** 2:
+                n["is_dual"] = True
         # 채널 필드 슬롯 = median_box 중심에 가장 가까운 슬롯
         fb = field["median_box"]; fcx = (fb[0] + fb[2]) / 2; fcy = (fb[1] + fb[3]) / 2
         fld_slot = min(slots, key=lambda s: (s["box"][0] + s["box"][2]) / 2 - fcx if False else
@@ -222,23 +227,28 @@ def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
                 TCOL = {"time": (70, 130, 255), "date": (70, 130, 255),
                         "channelnum": (240, 210, 40), "othernum": (170, 170, 170),
                         "text": (170, 170, 170)}
-                # 이 프레임에서 '채널로 선택된' 박스들 (chosen 슬롯의 현재 프레임 멤버)
-                chan_boxes = []
+                # 현재 프레임에서 primary 채널 박스(초록) / 듀얼 박스(청록)
+                chan_boxes, dual_boxes = [], []
                 for s in slots:
+                    m = next((m for m in s["mem"] if m["uid"] == uid), None)
+                    if not m:
+                        continue
                     if s.get("chosen"):
-                        m = next((m for m in s["mem"] if m["uid"] == uid), None)
-                        if m:
-                            chan_boxes.append(m["box"])
+                        chan_boxes.append(m["box"])
+                    elif s.get("is_dual"):
+                        dual_boxes.append(m["box"])
                 near = lambda a, b: all(abs(a[i] - b[i]) <= 2 for i in range(4))
                 im4 = base.copy(); d = ImageDraw.Draw(im4)
                 for c in cand:               # 2_fullocr 와 같은 박스들
                     b = c["bbox_xyxy"]; t = c.get("text", "")
                     if any(near(b, cb) for cb in chan_boxes):
-                        col, wd, lab = (0, 210, 0), 5, "CHANNEL"
+                        col, wd, lab = (0, 210, 0), 5, "CHANNEL"          # 초록 = 최종 채널 1개
+                    elif any(near(b, cb) for cb in dual_boxes):
+                        col, wd, lab = (0, 210, 210), 4, "dual"           # 청록 = 같은 채널 2차표시
                     else:
                         col, wd, lab = TCOL.get(classify(t), (170, 170, 170)), 2, None
                     d.rectangle([int(v) for v in b], outline=col, width=wd)
-                    if lab:                  # 채널만 글자 라벨(나머지는 색만 → 덜 어지럽게)
+                    if lab:                  # 채널/듀얼만 글자 라벨(나머지는 색만)
                         _label_box(d, (b[0], max(0, b[1] - 20)), lab, col, Fsmall)
                 _label_box(d, (8, 8), "4) classify (green=selected channel, others excluded)",
                            (255, 255, 0), Ft)
