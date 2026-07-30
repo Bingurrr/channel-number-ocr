@@ -34,12 +34,14 @@ def gt_of(stem):
     return str(int(d)) if d else ""
 
 
-def crop_box(img, box, pad):
+def crop_box(img, box, pad, pad_right):
+    """median 박스는 평균 너비라 긴(4자리) 채널은 오른쪽이 잘림 → 오른쪽을 특히 넉넉히."""
     W, H = img.size
     x1, y1, x2, y2 = [float(v) for v in box]
-    pw = (x2 - x1) * pad; ph = (y2 - y1) * pad
-    cx1, cy1 = max(0, int(x1 - pw)), max(0, int(y1 - ph))
-    cx2, cy2 = min(W, int(x2 + pw)), min(H, int(y2 + ph))
+    bw = x2 - x1; ph = (y2 - y1) * pad
+    cx1 = max(0, int(x1 - bw * pad))
+    cx2 = min(W, int(x2 + bw * pad_right))        # 오른쪽 대폭 확장(잘림 방지)
+    cy1, cy2 = max(0, int(y1 - ph)), min(H, int(y2 + ph))
     if cx2 - cx1 < 4 or cy2 - cy1 < 4:
         return None
     return img.crop((cx1, cy1, cx2, cy2))
@@ -50,7 +52,8 @@ def main():
     ap.add_argument("--result", required=True, help="predict_folder_slot --out 결과 디렉토리")
     ap.add_argument("--root", required=True, help="원본 이미지 루트(재귀 탐색)")
     ap.add_argument("--out", required=True, help="crop 저장 디렉토리")
-    ap.add_argument("--pad", type=float, default=0.12, help="ROI 여백(약간)")
+    ap.add_argument("--pad", type=float, default=0.25, help="상/하/좌 여백")
+    ap.add_argument("--pad-right", type=float, default=0.7, help="오른쪽 여백(4자리 잘림 방지, 크게)")
     ap.add_argument("--max-per-folder", type=int, default=0, help="폴더당 최대(0=전부)")
     args = ap.parse_args()
 
@@ -87,7 +90,7 @@ def main():
             img = Image.open(ip).convert("RGB")
         except Exception:
             skip += 1; continue
-        crop = crop_box(img, box, args.pad)
+        crop = crop_box(img, box, args.pad, args.pad_right)
         if crop is None:
             skip += 1; continue
         h = hashlib.md5(f"{frame}-{made}".encode()).hexdigest()[:10]
