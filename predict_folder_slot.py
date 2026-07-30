@@ -41,6 +41,8 @@ def main():
     ap.add_argument("--no-qualitative", action="store_true")
     ap.add_argument("--force-read", action="store_true",
                     help="(선택) 못읽은 프레임의 확정 ROI를 crop+확대해서 full OCR로 재읽기")
+    ap.add_argument("--viz-force-read", type=int, default=0, metavar="N",
+                    help="force-read 변환 시각화(폴더당 N장): crop→padding→확대→읽기 스텝 저장")
     ap.add_argument("--viz-steps", type=int, default=0, metavar="N")
     ap.add_argument("--keep-staged", action="store_true")
     args = ap.parse_args()
@@ -141,6 +143,25 @@ def main():
                         if uid in readval and uid not in field["per_frame"]:
                             field["per_frame"][uid] = readval[uid]; filled += 1
                 print(f"[force-read/full-OCR] ROI 재읽기 {filled}프레임 (unread {len(unread)}중)", flush=True)
+                # crop→pad→확대→읽기 스텝 시각화
+                if args.viz_force_read > 0:
+                    from PIL import Image as _I
+                    cnt = {}
+                    for g, (entry, field) in per_folder.items():
+                        if not field:
+                            continue
+                        for uid in sorted(seqs.get(g, [])):
+                            if uid in readval and cnt.get(g, 0) < args.viz_force_read:
+                                try:
+                                    img = _I.open(by_id[uid]["image_path"]).convert("RGB")
+                                except Exception:
+                                    continue
+                                ui = _safe(Path(g).name if g not in ("", "(root)") else root.name, root)
+                                step_viz.force_read_steps(
+                                    img, field["median_box"],
+                                    out / "force_read_viz" / ui / meta.get(uid, uid), readval[uid])
+                                cnt[g] = cnt.get(g, 0) + 1
+                    print(f"[viz-force-read] crop→pad→확대 저장 → {out}/force_read_viz/", flush=True)
         shutil.rmtree(sub, ignore_errors=True)
 
     # === 출력 ===

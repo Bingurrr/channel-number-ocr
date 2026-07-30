@@ -91,6 +91,29 @@ def _label_box(draw, xy, text, color, font, fill_bg=(0, 0, 0)):
     draw.text((x, y), text, fill=color, font=font)
 
 
+def force_read_steps(img, box, sdir, read_val="", pad=0.2, min_height=120):
+    """Save crop -> padding -> upscale (-> read) steps for one force-read frame."""
+    from PIL import ImageDraw
+    sdir.mkdir(parents=True, exist_ok=True)
+    F = _font(24)
+    b = [int(v) for v in box]
+    im1 = img.copy(); d = ImageDraw.Draw(im1)
+    d.rectangle(b, outline=(0, 220, 0), width=3)
+    _label_box(d, (b[0], max(0, b[1] - 26)), f"ROI h={b[3]-b[1]}px", (0, 220, 0), F)
+    _label_box(d, (8, 8), "1) known ROI on full frame", (255, 255, 0), F)
+    im1.save(sdir / "1_full_ROI.jpg", quality=90)
+    img.crop(tuple(b)).save(sdir / "2_crop_tight.jpg")
+    pw = int((b[2] - b[0]) * pad); ph = int((b[3] - b[1]) * pad)
+    pbox = (max(0, b[0] - pw), max(0, b[1] - ph), b[2] + pw, b[3] + ph)
+    padded = img.crop(pbox); padded.save(sdir / "3_crop_padded.jpg")
+    u = max(1.0, min_height / max(1, padded.height))
+    up = padded.resize((max(1, int(padded.width * u)), max(1, int(padded.height * u))))
+    d = ImageDraw.Draw(up)
+    _label_box(d, (4, 4), f"4) upscaled x{u:.1f}" + (f" -> read:{read_val}" if read_val else ""),
+               (0, 220, 0), _font(18))
+    up.save(sdir / "4_upscaled_read.jpg", quality=90)
+
+
 def render(by_id, seqs, per_folder, meta, out, n_each, gt_mode, safe):
     try:
         from PIL import Image, ImageDraw
