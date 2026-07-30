@@ -110,17 +110,25 @@ def main():
                     c = dc.get(uid, 0.5)
                     if uid not in d_conf or c > d_conf[uid]:
                         d_pf[uid] = v; d_conf[uid] = c
-            if args.both_channel and d_pf:
-                # A/B 교차: none이면 다른쪽, 둘 다 있으면 conf 높은쪽
+            if args.both_channel:
+                # 프레임내 중복(같은 숫자 2곳) — 위치 무관 신호라 '움직이는 2번째 박스'에 강함
+                wf = SA.within_frame_dupes(frames, ok_uids, conf_thr=args.min_conf)
+                # A/B 교차: 둘 다 있으면 conf 높은쪽, 하나면 그것, 둘 다 없으면 프레임내 중복
                 final = {}
-                for uid in set(p_pf) | set(d_pf):
+                for uid in set(p_pf) | set(d_pf) | set(wf):
                     v1, v2 = p_pf.get(uid), d_pf.get(uid)
                     if v1 and v2:
                         final[uid] = v1 if p_conf.get(uid, 0) >= d_conf.get(uid, 0) else v2
-                    else:
+                    elif v1 or v2:
                         final[uid] = v1 or v2
-                field = {"median_box": primary["box"], "per_frame": final,
-                         "per_frame_1": dict(p_pf), "per_frame_2": dict(d_pf),
+                    else:
+                        final[uid] = wf.get(uid)               # 이동 박스 등 → 중복으로 복구
+                # ch2 = 고정 듀얼 값이 없으면 프레임내 중복값으로 채워 보여줌
+                pf2 = dict(d_pf)
+                for uid, v in wf.items():
+                    pf2.setdefault(uid, v)
+                field = {"median_box": primary["box"], "per_frame": {k: v for k, v in final.items() if v},
+                         "per_frame_1": dict(p_pf), "per_frame_2": pf2,
                          "box2": duals[0]["box"] if duals else None,
                          "score": primary["score"], "distinct": primary["distinct"],
                          "duals": [d["box"] for d in duals], "both": True}

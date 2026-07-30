@@ -106,6 +106,41 @@ def _metrics(s, n, W0, H0):
             "sample": [m["text"] for m in items[:5]], "vertical_neighbor": False}
 
 
+def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
+    """프레임 '내부'에서 같은 숫자가 2곳 이상(멀리 떨어진 위치)에 뜨면 그 값이 채널일 확률이
+    높다 — 위치가 고정이든 '움직이든' 무관한 신호라 skylife의 이동 채널박스에 강함.
+
+    반환: {uid: value}. 오탐 방지로 순수 1~5자리 + 두 위치가 min_sep 이상 떨어진 경우만.
+    """
+    out = {}
+    for fi, im in enumerate(frames):
+        W = float(im.get("image_width") or 1280) or 1280
+        H = float(im.get("image_height") or 720) or 720
+        by_val = {}
+        for c in im.get("candidates", []):
+            b = c.get("bbox_xyxy"); t = c.get("text", "")
+            if not b or len(b) != 4 or classify(t) != "channelnum":
+                continue
+            v = best_digit(t)
+            if not v or float(c.get("ocr_conf", 0.5) or 0.5) < conf_thr:
+                continue
+            cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
+            by_val.setdefault(v, []).append((cx, cy, float(c.get("ocr_conf", 0.5) or 0.5)))
+        best = None
+        for v, pts in by_val.items():
+            distinct = []                                  # 서로 멀리 떨어진 위치만
+            for p in pts:
+                if all((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 >= min_sep ** 2 for q in distinct):
+                    distinct.append(p)
+            if len(distinct) >= 2:
+                sc = len(distinct) + max(p[2] for p in distinct)
+                if best is None or sc > best[1]:
+                    best = (v, sc)
+        if best:
+            out[ids[fi]] = best[0]
+    return out
+
+
 def analyze(frames, ids, pos_thr=0.04, conf_thr=0.3):
     """Return (primary, duals, all_sorted). primary = channel field slot (or None).
 
