@@ -31,6 +31,10 @@ KOREAN_FONT_DIR = "/home/irteam/teacher_model/assets/google_fonts/ofl/gothica1"
 
 FILL_COLORS = [(255, 255, 255), (245, 245, 245), (255, 235, 130), (255, 215, 0),
                (230, 230, 230), (200, 230, 255), (255, 255, 200), (180, 220, 255)]
+# 흰색 계열(미묘하게 다른 흰색) — 흰색 채널 / 흰색위흰색 하드케이스용
+WHITE_COLORS = [(255, 255, 255), (248, 248, 248), (240, 240, 240), (252, 250, 245),
+                (245, 248, 255), (250, 245, 245), (236, 238, 236), (255, 252, 246),
+                (242, 244, 248), (255, 248, 240)]
 
 
 def load_fonts():
@@ -63,10 +67,15 @@ def rand_bg_text(rng):
     return " ".join(parts)
 
 
-def make_text_bg(rng, font_path):
-    """Render random Korean/English text on a colored background -> RGB image."""
+def make_text_bg(rng, font_path, white_text=False):
+    """Render random Korean/English text on a colored background -> RGB image.
+
+    white_text=True renders the background text in a near-white shade (a DIFFERENT
+    white than the overlay picks) so the result is the hard 'white-on-white,
+    subtly different' case where color masking fails.
+    """
     W, H = rng.randint(120, 260), rng.randint(44, 96)
-    base = (rng.randint(10, 90), rng.randint(10, 90), rng.randint(10, 90))
+    base = (rng.randint(8, 70), rng.randint(8, 70), rng.randint(8, 70))
     im = Image.new("RGB", (W, H), base)
     d = ImageDraw.Draw(im)
     txt = rand_bg_text(rng)
@@ -75,13 +84,19 @@ def make_text_bg(rng, font_path):
         font = ImageFont.truetype(font_path, fs)
     except Exception:
         font = ImageFont.load_default()
-    tcol = (rng.randint(120, 220), rng.randint(120, 220), rng.randint(120, 220))
+    tcol = rng.choice(WHITE_COLORS) if white_text else \
+        (rng.randint(120, 220), rng.randint(120, 220), rng.randint(120, 220))
     d.text((rng.randint(2, 12), rng.randint(2, max(2, H - fs - 2))), txt, font=font, fill=tcol)
     return im
 
 
-def draw_overlay(bg, label, font_path, rng):
-    """Draw `label` on top of bg; return (image, overlay_bbox)."""
+def draw_overlay(bg, label, font_path, rng, white=False):
+    """Draw `label` on top of bg; return (image, overlay_bbox).
+
+    white=True picks the overlay color from the near-white family (subtle variation).
+    For white cases the dark outline is sometimes dropped so the model also sees the
+    truly-hard no-edge white-on-white case.
+    """
     im = bg.convert("RGB").copy()
     W, H = im.size
     d = ImageDraw.Draw(im)
@@ -95,9 +110,12 @@ def draw_overlay(bg, label, font_path, rng):
         size = int(size * 0.85)
     x = rng.randint(0, max(0, W - tw)) - l
     y = rng.randint(0, max(0, H - th)) - t
+    fill = rng.choice(WHITE_COLORS) if white else rng.choice(FILL_COLORS)
     ow = max(1, size // 22)
-    d.text((x, y), label, font=font, fill=rng.choice(FILL_COLORS),
-           stroke_width=ow, stroke_fill=(20, 20, 20))
+    if white and rng.random() < 0.35:        # 흰색 케이스 일부는 외곽선 없음(가장 어려움)
+        d.text((x, y), label, font=font, fill=fill)
+    else:
+        d.text((x, y), label, font=font, fill=fill, stroke_width=ow, stroke_fill=(20, 20, 20))
     return im, (x + l, y + t, x + l + tw, y + t + th)
 
 
@@ -121,6 +139,10 @@ def main():
     ap.add_argument("--bg-mode", choices=["digit_crop", "text"], default="digit_crop")
     ap.add_argument("--min-bg-h", type=int, default=28)
     ap.add_argument("--append", action="store_true", help="rec_gt.txt에 이어붙임(모드 섞을 때)")
+    ap.add_argument("--white", action="store_true",
+                    help="오버레이 채널숫자를 흰색 계열로(미묘한 변형)")
+    ap.add_argument("--bg-white-text", action="store_true",
+                    help="text 모드에서 배경 글자도 흰색 계열로 → 흰색위흰색 하드케이스")
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
@@ -151,9 +173,9 @@ def main():
             if bg.height < args.min_bg_h:
                 continue
         else:
-            bg = make_text_bg(rng, rng.choice(kfonts))
+            bg = make_text_bg(rng, rng.choice(kfonts), white_text=args.bg_white_text)
         label = rand_number(rng)
-        im, box = draw_overlay(bg, label, rng.choice(fonts), rng)
+        im, box = draw_overlay(bg, label, rng.choice(fonts), rng, white=args.white)
         im = tight_crop(im, box, rng)
         h = hashlib.md5(f"{label}-{made}-{rng.random()}".encode()).hexdigest()[:12]
         fn = f"images/{label}_{h}.jpg"
