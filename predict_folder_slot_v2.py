@@ -128,7 +128,11 @@ def main():
                 chan_boxes = [((pbx[0] + pbx[2]) / 2 / W0, (pbx[1] + pbx[3]) / 2 / H0)]
                 for d in duals:
                     db = d["box"]; chan_boxes.append(((db[0] + db[2]) / 2 / W0, (db[1] + db[3]) / 2 / H0))
+                # 채널값 집합을 넓게: 값이 바뀌는 모든 슬롯(=좌측하단 이동박스 포함)
                 chan_values = set(p_pf.values()) | set(d_pf.values())
+                for m in allm:
+                    if m.get("distinct", 0) >= 2:
+                        chan_values |= set(m.get("per_frame", {}).values())
                 res = SA.resolve_channel_per_frame(frames, ok_uids, chan_boxes, chan_values,
                                                    conf_thr=args.min_conf)
                 final = {uid: v for uid, (v, cf, ag) in res.items() if v}
@@ -140,6 +144,12 @@ def main():
                             final[uid] = v1 if p_conf.get(uid, 0) >= d_conf.get(uid, 0) else v2
                         elif v1 or v2:
                             final[uid] = v1 or v2
+                # 그래도 none이면: 프레임별 '최고 conf 채널후보'라도 뱉기 (사용자 아이디어)
+                topc = SA.top_channel_candidate(frames, ok_uids, conf_thr=args.min_conf,
+                                                chan_boxes=chan_boxes)
+                for uid in ok_uids:
+                    if not final.get(uid) and topc.get(uid):
+                        final[uid] = topc[uid]
                 field = {"median_box": primary["box"], "per_frame": {k: v for k, v in final.items() if v},
                          "per_frame_1": dict(p_pf), "per_frame_2": dict(d_pf),
                          "agree_frames": sum(1 for _u, (_v, _c, a) in res.items() if a),

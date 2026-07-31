@@ -153,6 +153,32 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
     return out
 
 
+def top_channel_candidate(frames, ids, conf_thr=0.3, chan_boxes=None, near=0.10):
+    """none 폴백: 프레임별로 '가장 conf 높은 채널숫자 후보'를 뱉는다.
+    채널영역(chan_boxes)이 주어지면 근처 후보에 가산점(같은 conf면 채널에 가까운 것)."""
+    out = {}
+    for fi, im in enumerate(frames):
+        W = float(im.get("image_width") or 1280) or 1280
+        H = float(im.get("image_height") or 720) or 720
+        best = None
+        for c in im.get("candidates", []):
+            t = c.get("text", ""); b = c.get("bbox_xyxy")
+            if not b or len(b) != 4 or classify(t) != "channelnum":
+                continue
+            v = _cnorm(best_digit(t)); cf = float(c.get("ocr_conf", 0.5) or 0.5)
+            if not v or cf < conf_thr:
+                continue
+            cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
+            bonus = 0.15 if (chan_boxes and min(((cx - bx) ** 2 + (cy - by) ** 2) ** 0.5
+                                                for bx, by in chan_boxes) < near) else 0.0
+            sc = cf + bonus
+            if best is None or sc > best[0]:
+                best = (sc, v)
+        if best:
+            out[ids[fi]] = best[1]
+    return out
+
+
 def resolve_channel_per_frame(frames, ids, chan_boxes, chan_values, conf_thr=0.3,
                               near=0.06, min_sep=0.05, high_conf=0.6):
     """프레임마다 '읽히는 곳' 우선으로 채널값을 고른다 (사용자 설계).
