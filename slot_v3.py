@@ -164,7 +164,7 @@ def _score_persistent(s, i):
     hs = [e[3] for e in s["recent"]]
     h_cv = (st.pstdev(hs) / (sum(hs) / len(hs))) if len(hs) > 1 and sum(hs) > 0 else 0.0
     cov = present / max(1, i + 1)                              # lifetime 커버리지
-    score = cov * base * (0.55 + 0.45 * purity)
+    score = cov * base * (0.9 + 0.1 * purity)                  # purity 거의 중립(방송사명 붙은 채널 안 깎음)
     if h_cv > 0.30:
         score *= 0.4
     aspect = s["asum"] / s["count"]
@@ -221,8 +221,8 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
     ranked = sorted(elig, key=lambda s: -_score_persistent(s, n - 1))
     top = ranked[0]
     group = [top] + [s for s in ranked[1:] if _agree(top, s)]    # 채널 위치 그룹(예: 좌하단+우상단)
-    # 위치 신뢰도 = 일치/(일치+불일치) — 광고자리는 자주 불일치라 낮음
-    locs = [(s["cx"], s["cy"], s["mh"], s["twoloc"] / (s["twoloc"] + s["conflict"] + 1.0)) for s in group]
+    # 위치 가중치 = lifetime 채널점수(값다양성·커버리지·2곳일치) — 진짜 채널 위치(좌하단 배너)가 큼
+    locs = [(s["cx"], s["cy"], s["mh"], _score_persistent(s, n - 1)) for s in group]
     group_boxes = []
     for s in group:
         bx = [p[2] for p in s["pf"].values()]
@@ -247,15 +247,15 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
                 break
         if not reads:
             continue
-        loc_of_val = defaultdict(set)
+        # 값별 가중 투표: 각 값 점수 = Σ(위치점수 × conf). 같은 값이 여러 위치면 합산(일치 보너스),
+        # 위치점수가 커서 '진짜 채널 위치(좌하단)'의 값이 distractor(우상단 단일숫자)를 이김.
+        weight = defaultdict(float); best_read = {}
         for v, cf, pu, bx, li, lsc in reads:
-            loc_of_val[v].add(li)
-        agreed = {v for v, ls in loc_of_val.items() if len(ls) >= 2}   # 2곳 이상 같은 값 = 채널
-        if agreed:
-            pool = [r for r in reads if r[0] in agreed]
-            v, cf, pu, bx, li, lsc = max(pool, key=lambda r: r[1])                 # 일치값 중 conf
-        else:                                                                       # 일치 없음:
-            v, cf, pu, bx, li, lsc = max(reads, key=lambda r: r[5] * r[1])   # 신뢰높은 위치 우선(광고자리 배제)
+            weight[v] += (lsc + 0.01) * cf
+            if v not in best_read or cf > best_read[v][0]:
+                best_read[v] = (cf, bx)
+        v = max(weight, key=weight.get)
+        cf, bx = best_read[v]
         per_frame[ids[i]] = v; per_conf[ids[i]] = cf; boxes.append(bx)
     if not boxes:
         return None
