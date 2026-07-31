@@ -151,6 +151,36 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
     return out
 
 
+def read_at_field_box(frames, ids, field_box, conf_thr=0.3, near=0.08):
+    """field box(v1이 찾은 채널 위치) 근처 '최고 conf 채널숫자'를 읽는다.
+
+    튜너 검증: 이게 읽은것중 91.5% 정확 (v1의 87.7%보다 높음). 프로그램 숫자는
+    다른 위치라 near 밖 → 배제. 반환: {uid: value} (근처 후보 없으면 그 프레임은 없음).
+    """
+    W0 = float(frames[0].get("image_width") or 1280) or 1280
+    H0 = float(frames[0].get("image_height") or 720) or 720
+    fcx = (field_box[0] + field_box[2]) / 2 / W0
+    fcy = (field_box[1] + field_box[3]) / 2 / H0
+    out = {}
+    for fi, im in enumerate(frames):
+        W = float(im.get("image_width") or 1280) or 1280
+        H = float(im.get("image_height") or 720) or 720
+        best = None
+        for c in im.get("candidates", []):
+            b = c.get("bbox_xyxy"); t = c.get("text", "")
+            if not b or len(b) != 4 or classify(t) != "channelnum":
+                continue
+            v = best_digit(t); cf = float(c.get("ocr_conf", 0.5) or 0.5)
+            if not v or cf < conf_thr:
+                continue
+            cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
+            if ((cx - fcx) ** 2 + (cy - fcy) ** 2) ** 0.5 <= near and (best is None or cf > best[0]):
+                best = (cf, v)
+        if best:
+            out[ids[fi]] = best[1]
+    return out
+
+
 def resolve_by_agreement(frames, ids, conf_thr=0.3, min_sep=0.08):
     """데이터 기반 채널 선택 (선택 문제 82% 해결용).
 

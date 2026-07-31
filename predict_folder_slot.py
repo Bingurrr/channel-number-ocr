@@ -57,6 +57,12 @@ def main():
     ap.add_argument("--both-channel", action="store_true",
                     help="채널번호가 2곳(A/B)에 뜨는 UI: 둘 다 저장(ch1/ch2)하고, 한쪽이 "
                          "none이거나 conf 낮으면 다른쪽 값 사용")
+    ap.add_argument("--field-priority", action="store_true",
+                    help="[v3] 슬롯값 대신 'field box 근처 최고conf 후보'를 우선 사용. "
+                         "튜너 검증: field box 읽기 91.5% 정확(슬롯 87.7%보다 높음). "
+                         "근처 후보 없는 프레임은 기존 슬롯/force-answer로 커버")
+    ap.add_argument("--field-near", type=float, default=0.08,
+                    help="field-priority: field box 중심에서 이 정규화 반경 내 후보만 채널로 인정")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -157,6 +163,27 @@ def main():
                        "dual_boxes": field.get("duals", []) if field else [],
                        "slots": allm[:6]})
         per_folder[g] = (report[-1], field)
+
+    # === [v3] field box 우선: 슬롯값을 'field box 근처 최고conf 후보'로 오버라이드 ===
+    # 튜너 검증: field box 읽기가 91.5% 정확(슬롯 87.7%보다 높음). 근처 후보 없는
+    # 프레임은 건드리지 않아(기존 슬롯/force-answer 커버) → v1 이상 보장.
+    if args.field_priority:
+        overridden = added = 0
+        for g, (entry, field) in per_folder.items():
+            if not field:
+                continue
+            ok_uids = [u for u in sorted(seqs.get(g, [])) if u in by_id]
+            frames = [by_id[u] for u in ok_uids]
+            fbox = field["median_box"]
+            fb = SA.read_at_field_box(frames, ok_uids, fbox, conf_thr=args.min_conf, near=args.field_near)
+            for uid, v in fb.items():
+                prev = field["per_frame"].get(uid)
+                if prev is None:
+                    added += 1
+                elif prev != v:
+                    overridden += 1
+                field["per_frame"][uid] = v
+        print(f"[field-priority/v3] field box 우선 적용: 덮어씀 {overridden}, 신규 {added} 프레임", flush=True)
 
     # === (선택) ROI crop full-OCR 재읽기 ===
     if args.force_read:
