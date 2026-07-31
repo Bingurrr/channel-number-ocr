@@ -144,9 +144,13 @@ def main():
                             final[uid] = v1 if p_conf.get(uid, 0) >= d_conf.get(uid, 0) else v2
                         elif v1 or v2:
                             final[uid] = v1 or v2
-                # 그래도 none이면: 프레임별 '최고 conf 채널후보'라도 뱉기 (사용자 아이디어)
+                # 2번째 채널 위치 확정: 우측상단(primary) 값과 반복 일치한 위치(=좌측하단)
+                conf_regions = SA.confirmed_second_regions(frames, ok_uids, p_pf, primary["box"],
+                                                           conf_thr=args.min_conf)
+                fb_boxes = chan_boxes + conf_regions               # 확정 위치를 폴백 우선영역에 추가
+                # 그래도 none이면: 확정된 채널영역 근처 '최고 conf 후보'를 뱉기 (사용자 아이디어)
                 topc = SA.top_channel_candidate(frames, ok_uids, conf_thr=args.min_conf,
-                                                chan_boxes=chan_boxes)
+                                                chan_boxes=fb_boxes)
                 for uid in ok_uids:
                     if not final.get(uid) and topc.get(uid):
                         final[uid] = topc[uid]

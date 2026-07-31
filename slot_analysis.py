@@ -153,6 +153,42 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
     return out
 
 
+def confirmed_second_regions(frames, ids, ref_pf, ref_box, conf_thr=0.3,
+                             min_agree=2, sep=0.06):
+    """'2번째 채널 위치' 확정 (사용자 아이디어): 기준값(ref_pf, 보통 우측상단 값)과
+    '다른 위치'에서 같은 값이 나온 게 여러 프레임 반복되면, 그 위치를 채널로 확정.
+    프로그램명 같은 우연 숫자는 값이 계속 일치하진 않으니 걸러진다.
+
+    반환: 확정된 2번째 위치 중심 리스트 [(cx,cy),...] (정규화)
+    """
+    W0 = float(frames[0].get("image_width") or 1280) or 1280
+    H0 = float(frames[0].get("image_height") or 720) or 720
+    pcx = (ref_box[0] + ref_box[2]) / 2 / W0; pcy = (ref_box[1] + ref_box[3]) / 2 / H0
+    agree = []
+    for fi, im in enumerate(frames):
+        rv = ref_pf.get(ids[fi])
+        if not rv:
+            continue
+        for c in im.get("candidates", []):
+            b = c.get("bbox_xyxy"); t = c.get("text", "")
+            if not b or len(b) != 4 or classify(t) != "channelnum":
+                continue
+            if _cnorm(best_digit(t)) != rv or float(c.get("ocr_conf", 0.5) or 0.5) < conf_thr:
+                continue
+            cx, cy = (b[0] + b[2]) / 2 / W0, (b[1] + b[3]) / 2 / H0
+            if (cx - pcx) ** 2 + (cy - pcy) ** 2 < sep ** 2:      # 기준 위치 자신은 제외
+                continue
+            agree.append((cx, cy))
+    regions = []                                                 # 일치 위치 군집화(광고/방송 2위치)
+    for p in agree:
+        r = next((r for r in regions if (p[0] - r[0]) ** 2 + (p[1] - r[1]) ** 2 < sep ** 2), None)
+        if r:
+            r[2].append(p); r[0] = sum(x[0] for x in r[2]) / len(r[2]); r[1] = sum(x[1] for x in r[2]) / len(r[2])
+        else:
+            regions.append([p[0], p[1], [p]])
+    return [(r[0], r[1]) for r in regions if len(r[2]) >= min_agree]
+
+
 def top_channel_candidate(frames, ids, conf_thr=0.3, chan_boxes=None, near=0.10):
     """none 폴백: 프레임별로 '가장 conf 높은 채널숫자 후보'를 뱉는다.
     채널영역(chan_boxes)이 주어지면 근처 후보에 가산점(같은 conf면 채널에 가까운 것)."""
