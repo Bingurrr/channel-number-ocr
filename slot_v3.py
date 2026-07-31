@@ -125,7 +125,8 @@ def _assign(slots, c, by_height, band, size_lo, size_hi):
             bd, best = m, s
     if best is None:
         best = {"cx": c["cx"], "cy": c["cy"], "mh": c["h"], "last": -1, "recent": [],
-                "present": set(), "vals": {}, "count": 0, "psum": 0.0, "asum": 0.0, "twoloc": 0}
+                "present": set(), "vals": {}, "count": 0, "psum": 0.0, "asum": 0.0,
+                "twoloc": 0, "conflict": 0}
         slots.append(best)
     return best
 
@@ -139,7 +140,9 @@ def _update(s, c, i, agreed, mem):
     s["psum"] += c["purity"]
     s["asum"] += (c["box"][2] - c["box"][0]) / max(1e-6, (c["box"][3] - c["box"][1]))
     if c["value"] in agreed:
-        s["twoloc"] += 1
+        s["twoloc"] += 1                                       # 다른 곳과 값 일치(진짜 채널 신호)
+    elif agreed:
+        s["conflict"] += 1                                    # 일치값이 있는데 여기 값은 다름(광고자리 등)
     s["last"] = i
     r = s["recent"]                                            # 위치/높이 드리프트용(최근만)
     r.append((i, c["cx"], c["cy"], c["h"]))
@@ -218,7 +221,8 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
     ranked = sorted(elig, key=lambda s: -_score_persistent(s, n - 1))
     top = ranked[0]
     group = [top] + [s for s in ranked[1:] if _agree(top, s)]    # 채널 위치 그룹(예: 좌하단+우상단)
-    locs = [(s["cx"], s["cy"], s["mh"]) for s in group]
+    # 위치 신뢰도 = 일치/(일치+불일치) — 광고자리는 자주 불일치라 낮음
+    locs = [(s["cx"], s["cy"], s["mh"], s["twoloc"] / (s["twoloc"] + s["conflict"] + 1.0)) for s in group]
     group_boxes = []
     for s in group:
         bx = [p[2] for p in s["pf"].values()]
@@ -229,9 +233,9 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
     #    (프레임내 일치 우선) → 광고 속 딴 숫자(881 등 한 곳뿐)는 배제. 일치 없으면 깨끗+conf. ──
     per_frame, per_conf, boxes = {}, {}, []
     for i, cands in enumerate(pre_all):
-        reads = []                                             # (value, conf, purity, box, loc_idx)
+        reads = []                                             # (value, conf, purity, box, loc_idx, loc_score)
         for c in cands:
-            for li, (lx, ly, lh) in enumerate(locs):
+            for li, (lx, ly, lh, lsc) in enumerate(locs):
                 if lh > 0 and not (size_lo <= c["h"] / lh <= size_hi):
                     continue
                 if by_height:
@@ -239,16 +243,19 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
                         continue
                 elif ((c["cx"] - lx) ** 2 + (c["cy"] - ly) ** 2) ** 0.5 > band:
                     continue
-                reads.append((c["value"], c["conf"], c["purity"], c["box"], li))
+                reads.append((c["value"], c["conf"], c["purity"], c["box"], li, lsc))
                 break
         if not reads:
             continue
         loc_of_val = defaultdict(set)
-        for v, cf, pu, bx, li in reads:
+        for v, cf, pu, bx, li, lsc in reads:
             loc_of_val[v].add(li)
         agreed = {v for v, ls in loc_of_val.items() if len(ls) >= 2}   # 2곳 이상 같은 값 = 채널
-        pool = [r for r in reads if r[0] in agreed] if agreed else reads
-        v, cf, pu, bx, li = max(pool, key=lambda r: r[1] * (0.5 + 0.5 * r[2]))  # 깨끗+conf
+        if agreed:
+            pool = [r for r in reads if r[0] in agreed]
+            v, cf, pu, bx, li, lsc = max(pool, key=lambda r: r[1])                 # 일치값 중 conf
+        else:                                                                       # 일치 없음:
+            v, cf, pu, bx, li, lsc = max(reads, key=lambda r: r[5] * r[1])   # 신뢰높은 위치 우선(광고자리 배제)
         per_frame[ids[i]] = v; per_conf[ids[i]] = cf; boxes.append(bx)
     if not boxes:
         return None
