@@ -28,11 +28,14 @@ def _cnorm(v):
     return str(int(s)) if s.isdigit() else s
 
 
-def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr=0.3, by_size=False):
+def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr=0.3,
+                  by_size=False, band_thr=0.04):
     """Greedy clustering by (position within pos_thr) AND (glyph height within size gate).
 
-    by_size=True: 위치를 무시하고 '글자 높이(폰트 크기)'로만 묶는다. 채널번호는 채널마다
-    위치가 달라도 높이·비율이 일정하므로, 위치가 이동하는 UI에서 채널박스를 하나로 모은다.
+    by_size=True: '글자 높이(폰트 크기)' + '평행이동 정렬'로 묶는다. 채널번호는 채널마다
+    위치가 달라도 높이가 일정하고 그 이동이 순수 평행이동(같은 행=좌우 이동, 또는 같은
+    열=상하 이동)이라, 높이가 같고 같은 행 '또는' 같은 열(band_thr 이내)에 있으면 한 슬롯으로
+    모은다. 무관한 같은-높이 숫자(대각선 위치)는 제외된다.
 
     conf_thr drops low-confidence OCR false positives (hallucinated digits on dark
     regions, ocr_conf ~0.1) so they never seed spurious slots. Kept conservative
@@ -50,7 +53,7 @@ def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr
                 continue
             cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
             hgt = (b[3] - b[1]) / H
-            if by_size:                                           # 높이(폰트)로만 묶기
+            if by_size:                                           # 높이 + 평행이동 정렬로 묶기
                 best, bd = None, 999.0
                 for s in slots:
                     if s["mh"] <= 0:
@@ -58,7 +61,10 @@ def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr
                     r = hgt / s["mh"]
                     if not (size_lo <= r <= size_hi):             # 높이 게이트
                         continue
-                    d = abs(r - 1.0)                              # 높이가 가장 비슷한 슬롯
+                    dy = abs(cy - s["cy"]); dx = abs(cx - s["cx"])
+                    if min(dy, dx) > band_thr:                    # 같은 행 또는 같은 열이어야(평행이동)
+                        continue                                  # 대각선(무관 위치)은 제외
+                    d = abs(r - 1.0) + min(dy, dx)                # 높이 유사 + 축 정렬 정도
                     if d < bd:
                         bd, best = d, s
             else:                                                 # 위치 + 높이 (기존)
