@@ -189,9 +189,14 @@ def confirmed_second_regions(frames, ids, ref_pf, ref_box, conf_thr=0.3,
     return [(r[0], r[1]) for r in regions if len(r[2]) >= min_agree]
 
 
-def top_channel_candidate(frames, ids, conf_thr=0.3, chan_boxes=None, near=0.10):
-    """none 폴백: 프레임별로 '가장 conf 높은 채널숫자 후보'를 뱉는다.
-    채널영역(chan_boxes)이 주어지면 근처 후보에 가산점(같은 conf면 채널에 가까운 것)."""
+def top_channel_candidate(frames, ids, conf_thr=0.3, chan_boxes=None, near=0.08):
+    """none 폴백: '확정된 채널 위치(chan_boxes) 근처' 후보만 뱉는다 (하드 게이트).
+
+    이렇게 제한하지 않으면 하단 프로그램 숫자("2","8" 등)를 채널로 오인한다.
+    chan_boxes = primary + '값 일치로 확정된 2번째 위치'. 그 근처가 아니면 안 뱉음(none 유지).
+    """
+    if not chan_boxes:
+        return {}
     out = {}
     for fi, im in enumerate(frames):
         W = float(im.get("image_width") or 1280) or 1280
@@ -205,11 +210,11 @@ def top_channel_candidate(frames, ids, conf_thr=0.3, chan_boxes=None, near=0.10)
             if not v or cf < conf_thr:
                 continue
             cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
-            bonus = 0.15 if (chan_boxes and min(((cx - bx) ** 2 + (cy - by) ** 2) ** 0.5
-                                                for bx, by in chan_boxes) < near) else 0.0
-            sc = cf + bonus
-            if best is None or sc > best[0]:
-                best = (sc, v)
+            d = min(((cx - bx) ** 2 + (cy - by) ** 2) ** 0.5 for bx, by in chan_boxes)
+            if d > near:                          # 채널 위치 근처 아니면 제외(프로그램숫자 배제)
+                continue
+            if best is None or cf > best[0]:
+                best = (cf, v)
         if best:
             out[ids[fi]] = best[1]
     return out
