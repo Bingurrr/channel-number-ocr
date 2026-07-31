@@ -114,6 +114,16 @@ def main():
         for r in csv.DictReader(pf.open(encoding="utf-8-sig")):
             cur[r.get("frame", "")] = r.get("channel_number", "")
 
+    # v1이 찾은 채널 field box (profile_report.json) → 정규화 중심 (좌하단)
+    fbox = None
+    pr = res / "profile_report.json"
+    if pr.exists():
+        for r in json.loads(pr.read_text()):
+            b = r.get("channel_field_box")
+            if b:
+                W = 1280.0; H = 720.0
+                fbox = ((b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H); break
+
     rows = []                                            # (frame, gt, cands)
     for im in imgs:
         frame = im.get("image_id", "").split("__")[-1]
@@ -122,8 +132,8 @@ def main():
             continue
         rows.append((frame, _cn(gt), chan_cands(im)))
     region = find_region([c for _f, _g, c in rows])
-    print(f"프레임 {len(rows)}  채널영역(값다양성 최대) = "
-          f"({region[0]:.2f},{region[1]:.2f})" if region else "영역 없음", flush=True)
+    print(f"프레임 {len(rows)}  값다양성영역={region and (round(region[0],2),round(region[1],2))}  "
+          f"v1_field={fbox and (round(fbox[0],2),round(fbox[1],2))}", flush=True)
 
     strategies = {
         "current": lambda fr, g, c: _cn("".join(ch for ch in str(cur.get(fr, "")) if ch.isdigit())) if cur.get(fr) else "",
@@ -132,7 +142,13 @@ def main():
         "region_lock": lambda fr, g, c: near_region(c, region) or "",
         "region_lock_short": lambda fr, g, c: near_region(c, region, short=True) or "",
         "within_agree": lambda fr, g, c: within_agree(c) or "",
-        "agree_or_region": lambda fr, g, c: within_agree(c) or near_region(c, region, short=True) or "",
+        # v1 field box(좌하단) 기반 — 값다양성영역보다 신뢰
+        "field_lock": lambda fr, g, c: near_region(c, fbox, near=0.08) or "",
+        "field_short": lambda fr, g, c: near_region(c, fbox, short=True, near=0.08) or "",
+        "field_wide": lambda fr, g, c: near_region(c, fbox, near=0.14) or "",
+        "field_short_wide": lambda fr, g, c: near_region(c, fbox, short=True, near=0.14) or "",
+        "agree_or_field": lambda fr, g, c: within_agree(c) or near_region(c, fbox, short=True, near=0.12) or "",
+        "field_or_top": lambda fr, g, c: near_region(c, fbox, short=True, near=0.10) or (max(c, key=lambda x: x[3])[0] if c else ""),
     }
     print(f"\n{'strategy':<20}{'정확도%':>9}{'맞음/전체':>14}  (읽은것중)")
     for name, fn in strategies.items():
