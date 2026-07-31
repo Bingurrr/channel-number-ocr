@@ -60,6 +60,79 @@ def learn_font_color(crops, rel=0.35):
     return np.median(np.stack(fgs), axis=0), np.median(np.stack(bgs), axis=0)
 
 
+def learn_font_color_hist(crops, quant=24, min_frac=0.10):
+    """[사용자 방식] 채널박스에서 '일정비율(min_frac)↑ + 프레임간 일관되게' 나오는 색 = 폰트색.
+
+    배경(영상)은 프레임마다 바뀌어 여러 프레임에 걸쳐 일관되게 안 나옴 → 걸러짐.
+    폰트색은 매 프레임 같은 위치·같은 색 → 일관성 높음 → 선택됨.
+    반환: font_rgb(np.float32) 또는 None.
+    """
+    from collections import Counter
+    presence, weight = Counter(), Counter()             # 색→(등장 프레임수, 누적비율)
+    for c in crops:
+        arr = np.asarray(c.convert("RGB"))
+        q = (arr.astype(np.int32) // quant) * quant + quant // 2     # 색 양자화
+        flat = q.reshape(-1, 3)
+        colors, counts = np.unique(flat, axis=0, return_counts=True)
+        n = len(flat)
+        for col, cnt in zip(colors, counts):
+            if cnt / n >= min_frac:
+                key = (int(col[0]), int(col[1]), int(col[2]))
+                presence[key] += 1; weight[key] += cnt / n
+    if not presence:
+        return None
+    best = max(presence, key=lambda k: (presence[k], weight[k]))     # 일관성 우선, 비율 차선
+    return np.array(best, dtype=np.float32)
+
+
+def learn_font_color_temporal(crops, range_thr=28, quant=20, min_static=8):
+    """[개선] 같은 채널 프레임들에서 '색+위치가 고정된 픽셀'(=글자획)의 색 = 폰트색.
+
+    배경(영상)은 위치가 움직여 프레임간 변함 → 제외. 글자는 색·위치 고정 → 남음.
+    '10% 색'만으론 자주 나오는 배경을 오인하므로, 위치 일관성(시간축 저변화)을 먼저 건다.
+    crops는 '같은 채널' 프레임들의 동일 ROI여야 함(정렬 가정). 반환 font_rgb 또는 None.
+    """
+    from collections import Counter
+    base = crops[0].size
+    arrs = [np.asarray((c if c.size == base else c.resize(base)).convert("RGB"), dtype=np.float32) for c in crops]
+    stack = np.stack(arrs, axis=0)                       # (N,H,W,3)
+    rng = stack.max(0) - stack.min(0)                    # 프레임간 변화
+    static = rng.max(axis=2) < range_thr                 # 색+위치 고정 픽셀
+    if static.sum() < min_static:
+        return None
+    mean = stack.mean(0)                                 # 고정영역 평균색
+    q = (mean.astype(np.int32) // quant) * quant + quant // 2
+    cols = q[static].reshape(-1, 3)
+    cnt = Counter(map(tuple, cols.tolist()))
+    # 가장 흔한 '고정색'이 글자. 단, 너무 어두운(플레이트/검정) 것은 차선으로.
+    ranked = cnt.most_common()
+    best = ranked[0][0]
+    return np.array(best, dtype=np.float32)
+
+
+def isolate_contrast(crop, font, tol=60, pad=5, min_pixels=6):
+    """[사용자 방식] 폰트색 근처 픽셀만 원색 유지, 나머지는 '폰트색 대비색'으로 채움.
+
+    흰 폰트 → 검정 배경, 어두운 폰트 → 흰 배경 → 항상 고대비 → 잘 읽힘.
+    반환 (clean_img, mask). font None이면 원본.
+    """
+    arr = np.asarray(crop.convert("RGB"), dtype=np.float32)
+    if font is None:
+        return crop.convert("RGB"), Image.new("L", crop.size, 0)
+    d = np.linalg.norm(arr - font, axis=2)
+    mask = d < tol
+    lum = 0.299 * font[0] + 0.587 * font[1] + 0.114 * font[2]
+    bgc = (0, 0, 0) if lum > 110 else (255, 255, 255)   # 폰트 밝으면 배경 검정
+    out = np.empty(arr.shape, dtype=np.uint8); out[:] = bgc
+    out[mask] = arr[mask].astype(np.uint8)              # 폰트픽셀은 원색 유지
+    ys, xs = np.where(mask)
+    if len(xs) >= min_pixels:
+        x0, x1 = max(0, xs.min() - pad), min(arr.shape[1], xs.max() + pad + 1)
+        y0, y1 = max(0, ys.min() - pad), min(arr.shape[0], ys.max() + pad + 1)
+        out = out[y0:y1, x0:x1]
+    return Image.fromarray(out), Image.fromarray((mask * 255).astype("uint8"))
+
+
 def isolate(crop, font, bg, pad=5, out_bg=(255, 255, 255), min_pixels=6):
     """폰트색에 가까운 픽셀만 남기고 나머지는 흰색 → tight crop.
 

@@ -98,7 +98,8 @@ def main():
     ap.add_argument("--field-box-from", default=None, help="profile_report.json (channel_field_box 픽셀)")
     ap.add_argument("--rec-model-dir", default=None, help="파인튜닝 rec 디렉토리")
     ap.add_argument("--learn-conf", type=float, default=0.7, help="이 conf 이상 프레임에서만 폰트색 학습")
-    ap.add_argument("--rel", type=float, default=0.35, help="폰트색 학습 전경 임계(preprocess_digits)")
+    ap.add_argument("--min-frac", type=float, default=0.10, help="폰트색 판정: 박스에서 이 비율 이상 나온 색")
+    ap.add_argument("--tol", type=float, default=60, help="색분리 허용 거리(클수록 폰트색 근처 더 포함)")
     ap.add_argument("--viz-n", type=int, default=60)
     args = ap.parse_args()
 
@@ -131,13 +132,16 @@ def main():
         rois.append(crop)
         reads.append(rec_read(rec, crop, tmp))
 
-    # ── 폰트색 학습: 고conf 프레임의 ROI에서 ──
+    # ── 폰트색 학습: 고conf(성공) 프레임의 ROI에서, 히스토그램(10%↑+프레임간 일관) ──
     learn_crops = [rois[i] for i in range(len(imgs)) if reads[i][1] >= args.learn_conf and rois[i] is not None]
-    font, bg = PD.learn_font_color(learn_crops, rel=args.rel) if learn_crops else (None, None)
+    if not learn_crops:            # 성공 프레임 없으면 전체로 학습 (차선)
+        print(f"경고: conf>={args.learn_conf} 프레임 없음 → 전체 {len(imgs)}장으로 학습", flush=True)
+        learn_crops = [r for r in rois if r is not None]
+    font = PD.learn_font_color_hist(learn_crops, min_frac=args.min_frac)
     fs = "None" if font is None else tuple(int(v) for v in font)
-    print(f"학습에 쓴 고conf 프레임 {len(learn_crops)}장 → 폰트색={fs}", flush=True)
+    print(f"학습에 쓴 프레임 {len(learn_crops)}장 → 폰트색(히스토그램)={fs}", flush=True)
     if font is None:
-        print("경고: 고conf 프레임이 없어 폰트색 학습 실패. --learn-conf 낮추거나 ROI 확인.", flush=True)
+        print("경고: 폰트색 학습 실패. --min-frac 낮추거나 ROI 확인.", flush=True)
 
     # ── PASS 2: 색분리 → 재읽기 → 저장 ──
     rows = []
@@ -146,7 +150,7 @@ def main():
         if rois[i] is None:
             continue
         old_d, old_c = reads[i]
-        clean, mask = PD.isolate(rois[i], font, bg)
+        clean, mask = PD.isolate_contrast(rois[i], font, tol=args.tol)   # 대비색 배경
         new_d, new_c = rec_read(rec, clean, tmp)
         clean.save(clean_d / f"{p.stem}.png")
         imp = bool(new_d) and (not old_d or new_c > old_c + 0.05)
@@ -154,7 +158,7 @@ def main():
         rows.append({"frame": p.name, "old_read": old_d, "old_conf": round(old_c, 3),
                      "new_read": new_d, "new_conf": round(new_c, 3), "improved": imp})
         if viz < args.viz_n:
-            PD.make_viz(rois[i], mask, clean, font, bg,
+            PD.make_viz(rois[i], mask, clean, font, None,
                         text=f"{old_d}({old_c:.2f})->{new_d}({new_c:.2f})").save(viz_d / f"{p.stem}.jpg")
             viz += 1
 
