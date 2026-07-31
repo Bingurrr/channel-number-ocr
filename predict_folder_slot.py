@@ -71,6 +71,10 @@ def main():
                     help="second-channel: 2번째영역으로 확정하는 최소 누적 일치 투표수")
     ap.add_argument("--second-conf-gate", type=float, default=0.6,
                     help="second-channel: primary conf가 이 값 미만이고 2번째가 더 높으면 교정")
+    ap.add_argument("--color-isolate", action="store_true",
+                    help="[v3] force-answer 재읽기 시 여러 프레임에서 폰트색을 학습해 숫자만 "
+                         "남기고 배경 제거 후 rec (유사배경/저대비 프레임 개선). "
+                         "분리 시각화는 out/color_isolate_viz/ 에 저장")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -264,6 +268,10 @@ def main():
                       "--progress-every", "200"]
                 if rd is not None and (rd / "inference.pdiparams").exists():
                     rr += ["--rec-model-dir", str(rd)]
+                if args.color_isolate:
+                    rr += ["--color-isolate", "--color-isolate-viz", out / "color_isolate_viz"]
+                    print(f"[color-isolate] 폰트색 학습→숫자만 남기고 재읽기, 시각화 → "
+                          f"{out}/color_isolate_viz/", flush=True)
                 rc = P.sh(rr, env)
             else:
                 rc = P.sh([PY, f"{SRC}/fullocr_crops.py", "--images", sub, "--yolo-label-dir", field_lbl,
