@@ -86,6 +86,9 @@ def main():
     ap.add_argument("--font-isolate-margin", type=float, default=1.0,
                     help="font-isolate: 색분리 보수성(>1이면 배경 더 지움, <1이면 덜)")
     ap.add_argument("--font-isolate-viz", type=int, default=30, help="font-isolate: 폴더당 시각화 장수")
+    ap.add_argument("--cluster-by-size", action="store_true",
+                    help="[v3] 채널박스가 채널마다 다른 위치에 뜨는 UI: 위치 대신 '글자 높이(폰트 "
+                         "크기)'로 클러스터링/선택. 위치 이동에 강함(값다양성+채널숫자+높이일관성으로 선택)")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -137,7 +140,7 @@ def main():
         frames = [by_id[u] for u in ok_uids]
         if not frames:
             continue
-        primary, duals, allm = SA.analyze(frames, ok_uids, conf_thr=args.min_conf)
+        primary, duals, allm = SA.analyze(frames, ok_uids, conf_thr=args.min_conf, by_size=args.cluster_by_size)
         if primary:
             p_pf = primary["per_frame"]; p_conf = primary.get("per_frame_conf", {})
             # 듀얼(2번째 채널박스) 값/신뢰도 병합 (여러 듀얼이면 프레임별 최고 conf)

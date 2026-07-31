@@ -28,8 +28,11 @@ def _cnorm(v):
     return str(int(s)) if s.isdigit() else s
 
 
-def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr=0.3):
+def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr=0.3, by_size=False):
     """Greedy clustering by (position within pos_thr) AND (glyph height within size gate).
+
+    by_size=True: 위치를 무시하고 '글자 높이(폰트 크기)'로만 묶는다. 채널번호는 채널마다
+    위치가 달라도 높이·비율이 일정하므로, 위치가 이동하는 UI에서 채널박스를 하나로 모은다.
 
     conf_thr drops low-confidence OCR false positives (hallucinated digits on dark
     regions, ocr_conf ~0.1) so they never seed spurious slots. Kept conservative
@@ -47,16 +50,28 @@ def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr
                 continue
             cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
             hgt = (b[3] - b[1]) / H
-            best, bd = None, pos_thr
-            for s in slots:
-                pos_d = ((s["cx"] - cx) ** 2 + (s["cy"] - cy) ** 2) ** 0.5
-                if pos_d >= bd:
-                    continue
-                if s["mh"] > 0:                                  # 크기(폰트) 게이트
-                    r = hgt / s["mh"]
-                    if not (size_lo <= r <= size_hi):
+            if by_size:                                           # 높이(폰트)로만 묶기
+                best, bd = None, 999.0
+                for s in slots:
+                    if s["mh"] <= 0:
                         continue
-                bd, best = pos_d, s
+                    r = hgt / s["mh"]
+                    if not (size_lo <= r <= size_hi):             # 높이 게이트
+                        continue
+                    d = abs(r - 1.0)                              # 높이가 가장 비슷한 슬롯
+                    if d < bd:
+                        bd, best = d, s
+            else:                                                 # 위치 + 높이 (기존)
+                best, bd = None, pos_thr
+                for s in slots:
+                    pos_d = ((s["cx"] - cx) ** 2 + (s["cy"] - cy) ** 2) ** 0.5
+                    if pos_d >= bd:
+                        continue
+                    if s["mh"] > 0:                               # 크기(폰트) 게이트
+                        r = hgt / s["mh"]
+                        if not (size_lo <= r <= size_hi):
+                            continue
+                    bd, best = pos_d, s
             if best is None:
                 best = {"cx": cx, "cy": cy, "mh": hgt, "items": [], "boxes": [],
                         "cxs": [], "cys": [], "hs": []}
@@ -73,7 +88,7 @@ def cluster_slots(frames, ids, pos_thr=0.04, size_lo=0.55, size_hi=1.8, conf_thr
     return slots
 
 
-def _metrics(s, n, W0, H0):
+def _metrics(s, n, W0, H0, by_size=False):
     items = s["items"]; types = [m["type"] for m in items]
     present = len(set(m["frame"] for m in items))
     chan_ratio = sum(t == "channelnum" for t in types) / max(1, len(types))
@@ -94,10 +109,10 @@ def _metrics(s, n, W0, H0):
         score *= 0.15
     if area > 0.06:
         score *= 0.15
-    if pos_std > 0.03:
-        score *= 0.5           # 원본: 위치 흔들리면 감점 (85% 기준)
+    if not by_size and pos_std > 0.03:
+        score *= 0.5           # 원본: 위치 흔들리면 감점 (85% 기준). by_size면 위치 무시
     if h_cv > 0.35:
-        score *= 0.6
+        score *= 0.6           # by_size에서도 높이 일관성은 요구 (핵심 신호)
     # 프레임별 채널값 + 신뢰도(같은 프레임에 여러 후보면 최고 conf 채택)
     pf, pfc = {}, {}
     for m in items:
@@ -427,8 +442,11 @@ def resolve_channel_per_frame(frames, ids, chan_boxes, chan_values, conf_thr=0.3
     return out
 
 
-def analyze(frames, ids, pos_thr=0.04, conf_thr=0.3):
+def analyze(frames, ids, pos_thr=0.04, conf_thr=0.3, by_size=False):
     """Return (primary, duals, all_sorted). primary = channel field slot (or None).
+
+    by_size=True: 위치가 아니라 '글자 높이(폰트 크기)'로 클러스터링/선택 → 채널마다 채널박스
+    위치가 달라지는 UI에 강함(값 다양성 + 채널숫자 + 높이 일관성으로 선택).
 
     conf_thr는 저신뢰 OCR 후보를 클러스터링 전에 걸러냄. 낮추면 none(미탐지)이 줄지만
     노이즈 숫자가 통과해 오답이 늘 수 있으니 값을 바꿔가며 확인.
@@ -436,9 +454,10 @@ def analyze(frames, ids, pos_thr=0.04, conf_thr=0.3):
     n = len(frames)
     W0 = float(frames[0].get("image_width") or 1280) or 1280
     H0 = float(frames[0].get("image_height") or 720) or 720
-    slots = cluster_slots(frames, ids, pos_thr, conf_thr=conf_thr)
-    ms = [_metrics(s, n, W0, H0) for s in slots]
+    slots = cluster_slots(frames, ids, pos_thr, conf_thr=conf_thr, by_size=by_size)
+    ms = [_metrics(s, n, W0, H0, by_size=by_size) for s in slots]
     # 세로 채널리스트 페널티: 같은 x + 같은 높이 + 세로 이웃 = 이전/다음 채널 리스트
+    # (by_size에선 위치가 흩어져 있어 이 페널티가 잘못 걸릴 일이 적음)
     for a in ms:
         for b in ms:
             if a is b:
