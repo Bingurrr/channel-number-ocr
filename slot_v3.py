@@ -156,7 +156,7 @@ def _score_persistent(s, i, mem):
     hs = [e[3] for e in r]
     h_cv = (st.pstdev(hs) / (sum(hs) / len(hs))) if len(hs) > 1 and sum(hs) > 0 else 0.0
     cov = present / max(1, span)                                # 최근 커버리지(끊기면 급락→적응)
-    score = cov * base * purity
+    score = cov * base * (0.55 + 0.45 * purity)                 # 순수도 감점 완화("000 YTN"도 채널)
     if h_cv > 0.30:
         score *= 0.4                                            # 높이 일관성 필수
     aspect = sum(e[6] for e in r) / len(r)
@@ -168,14 +168,23 @@ def _score_persistent(s, i, mem):
     return score
 
 
+def _agree(a, b, min_common=3, ratio=0.6):
+    """두 슬롯이 같은 채널을 다른 위치에서 표시하는가(값이 공통 프레임에서 일치)."""
+    common = set(a.get("pf", {})) & set(b.get("pf", {}))
+    if len(common) < min_common:
+        return False
+    match = sum(1 for f in common if a["pf"][f][0] == b["pf"][f][0])
+    return match >= ratio * len(common)
+
+
 def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
                     size_lo=0.6, size_hi=1.7, min_present=2, conf_thr=0.3,
                     hysteresis=0.2):
-    """(C) on-device: 슬롯별 '최근 window프레임 통계'만 유지(이미지 저장 X, O(#슬롯×window)).
-    선택은 그 최근 통계로(5개보다 강함) + 위치가 갑자기 바뀌면 옛 슬롯은 통계가 늙어 사라지고
-    새 위치 슬롯이 쌓여 자동 적응. prune도 window로.
+    """(C) on-device: 슬롯별 '최근 window프레임 통계'만 유지(이미지 저장 X). 선택은 그 최근
+    통계로(강함) + 위치 변하면 옛 슬롯 사라지고 적응. **채널이 2곳(좌하단+우상단 등)에 뜨면
+    두 곳을 그룹으로 묶어 프레임마다 conf 높은 쪽으로 읽어 커버리지·정확도 회복(v1 second-channel).
 
-    위치는 '묶는 키'(_assign), 선택은 '내용'(_score_persistent: 값다양성·순수도·높이·2곳일치).
+    위치는 '묶는 키', 선택은 '내용'(값다양성·순수도·높이·2곳일치).
     """
     mem = max(2, window)
     slots = []
@@ -191,22 +200,28 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
             key = id(s)
             if key not in cur or c["conf"] > cur[key][1]:
                 cur[key] = (c["value"], c["conf"], c["box"])
-        slots = [s for s in slots if i - s["last"] < mem]       # 최근 window 안 보인 슬롯 제거(적응)
-        best, bsc = None, -1.0
-        for s in slots:
-            if min(mem, i + 1) >= min_present and len({e[0] for e in s["recent"]}) < min_present:
-                continue                                        # 1회성 후보 버림
-            sc = _score_persistent(s, i, mem)
-            if prev is not None and abs(s["cy"] - prev[1]) < band and abs(s["cx"] - prev[0]) < max(band, 0.15):
-                sc *= (1.0 + hysteresis)                        # 이력 sticky(잔떨림만 억제, 적응은 유지)
-            if sc > bsc:
-                bsc, best = sc, s
-        if best is not None:
-            prev = (best["cx"], best["cy"], best["mh"])
-            key = id(best)
-            if key in cur:
-                v, conf, box = cur[key]
-                per_frame[ids[i]] = v; per_conf[ids[i]] = conf; boxes.append(box)
+        for key, (v, cf, bx) in cur.items():                   # 슬롯별 프레임값 기록(교차채움/일치용)
+            for s in slots:
+                if id(s) == key:
+                    s.setdefault("pf", {})[i] = (v, cf, bx)
+                    for f in [f for f in s["pf"] if f < i - mem + 1]:
+                        del s["pf"][f]
+                    break
+        slots = [s for s in slots if i - s["last"] < mem]       # 오래 안 보인 슬롯 제거(적응)
+        elig = [s for s in slots
+                if not (min(mem, i + 1) >= min_present and len({e[0] for e in s["recent"]}) < min_present)]
+        if not elig:
+            continue
+        ranked = sorted(elig, key=lambda s: -(_score_persistent(s, i, mem)
+                        * (1.0 + hysteresis if prev is not None and abs(s["cy"] - prev[1]) < band
+                           and abs(s["cx"] - prev[0]) < max(band, 0.15) else 1.0)))
+        top = ranked[0]
+        prev = (top["cx"], top["cy"], top["mh"])
+        group = [top] + [s for s in ranked[1:] if _agree(top, s)]   # 채널 2곳 그룹
+        picks = [cur[id(s)] for s in group if id(s) in cur]         # 이 프레임에 잡힌 그룹 값들
+        if picks:
+            v, conf, box = max(picks, key=lambda x: x[1])           # conf 높은 위치로 읽음
+            per_frame[ids[i]] = v; per_conf[ids[i]] = conf; boxes.append(box)
     if not boxes:
         return None
     box = [st.median([b[k] for b in boxes]) for k in range(4)]
