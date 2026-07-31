@@ -62,27 +62,24 @@ def main():
             if r.get("channel_field_box"):
                 boxes[r["folder"]] = r["channel_field_box"]
 
-    # 예측 로드 (per_frame.csv: folder,frame,channel_number)
-    preds = {}
+    # 예측 로드 (per_frame.csv엔 '예측된' 프레임만 있음 → none은 여기 없음)
+    preds, folder_of = {}, {}
     with (res / "per_frame.csv").open(encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             preds[r.get("frame", "")] = r.get("channel_number", "")
+            folder_of[r.get("frame", "")] = r.get("folder", "")
 
-    # 모든 GT 프레임 순회 (per_frame.csv에 없으면 none으로 간주)
-    all_frames = {}
-    for r in csv.DictReader((res / "per_frame.csv").open(encoding="utf-8-sig")):
-        all_frames[r.get("frame", "")] = r.get("folder", "")
-
+    # full_ocr(모든 프레임) 기준 순회. 스테이징 uid "{group}__{stem}" → 원본 stem 복원.
     fails, cats = [], Counter()
     n_gt = 0
     for uid, im in by_id.items():
-        frame = im.get("image_id", uid)
+        frame = uid.split("__")[-1]                # 원본 파일명 stem 복원 (".__000"→"000")
         gt = gt_from_name(frame)
         if not gt:
             continue
         n_gt += 1
         gtn = _cn(gt)
-        pred = preds.get(frame, "")
+        pred = preds.get(frame, "")                # per_frame에 없으면 none
         predn = _cn("".join(ch for ch in str(pred) if ch.isdigit())) if pred else ""
         if pred and predn == gtn:
             continue                                   # 성공
@@ -109,7 +106,7 @@ def main():
             cat = "wrong_but_readable" if gt_readable else "wrong_not_readable"
         cats[cat] += 1
         fails.append({"frame": frame, "gt": gtn, "pred": pred or "none", "category": cat,
-                      "field_box": boxes.get(all_frames.get(frame, ""), None),
+                      "field_box": boxes.get(folder_of.get(frame, ""), None),
                       "gt_readable_as_channel": gt_readable,
                       "gt_conf": sorted([c["conf"] for c in cands if c["value"] == gtn], reverse=True),
                       "channel_candidates": sorted(cands, key=lambda c: -c["conf"])})
