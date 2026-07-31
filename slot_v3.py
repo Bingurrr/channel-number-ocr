@@ -220,10 +220,10 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
         if bx:
             group_boxes.append([st.median([b[k] for b in bx]) for k in range(4)])
 
-    # ── PASS 2: 매 프레임 '그룹 위치들' 중 실제로 읽힌 곳(conf 높은)에서 읽음 → 교차 채움 ──
+    # ── PASS 2: 매 프레임 '그룹 위치들' 중 '깨끗하고(안 겹침) conf 높은' 곳에서 읽음 → 교차 채움 ──
     per_frame, per_conf, boxes = {}, {}, []
     for i, cands in enumerate(pre_all):
-        best = None
+        best = None                                             # (weight, value, conf, box)
         for c in cands:
             for lx, ly, lh in locs:
                 if lh > 0 and not (size_lo <= c["h"] / lh <= size_hi):
@@ -233,11 +233,12 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
                         continue
                 elif ((c["cx"] - lx) ** 2 + (c["cy"] - ly) ** 2) ** 0.5 > band:
                     continue
-                if best is None or c["conf"] > best[1]:
-                    best = (c["value"], c["conf"], c["box"])
+                w = c["conf"] * (0.5 + 0.5 * c["purity"])       # 안 겹친(순수) 읽기 우선
+                if best is None or w > best[0]:
+                    best = (w, c["value"], c["conf"], c["box"])
                 break
         if best:
-            per_frame[ids[i]] = best[0]; per_conf[ids[i]] = best[1]; boxes.append(best[2])
+            per_frame[ids[i]] = best[1]; per_conf[ids[i]] = best[2]; boxes.append(best[3])
     if not boxes:
         return None
     box = [st.median([b[k] for b in boxes]) for k in range(4)]

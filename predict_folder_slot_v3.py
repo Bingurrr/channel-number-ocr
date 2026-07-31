@@ -148,7 +148,7 @@ def main():
                     saved += 1
             print(f"정성 이미지 {saved}장 (성공 샘플 + _failures/ 실패 전부)", flush=True)
 
-    # === step-viz: 후보 박스 + 채널 그룹위치 + 선택값 ===
+    # === step-viz: 후보(파랑)+값 / 채널위치(노랑) / 선택값(맞음=초록,틀림=빨강+gt). 실패 위주 ===
     if args.viz_steps > 0:
         try:
             from PIL import Image, ImageDraw
@@ -156,30 +156,47 @@ def main():
         except Exception:
             Image = None
         if Image is not None:
+            norm = lambda s: str(int(s)) if str(s).isdigit() else str(s)
             sv = 0
             for g, (box, pf, gboxes) in per_folder.items():
                 allu = [u for u in sorted(seqs.get(g, [])) if u in by_id]
-                sd = out / "step_viz" / _safe(g, root); sd.mkdir(parents=True, exist_ok=True)
-                for uid in allu[:: max(1, len(allu) // max(1, args.viz_steps))][:args.viz_steps]:
+                oks, fails = [], []
+                for uid in allu:
+                    pred = P._dg(pf.get(uid, ""))
+                    gt = P.gt_from_name(meta.get(uid, uid)) if args.gt_from_filename else None
+                    isf = (not pred) or (gt and norm(pred) != norm(gt))
+                    (fails if isf else oks).append(uid)
+                step = max(1, len(oks) // max(1, args.viz_steps))
+                pick = [(u, True) for u in fails[:args.viz_steps * 2]] + [(u, False) for u in oks[::step][:args.viz_steps]]
+                sd = out / "step_viz" / _safe(g, root); fd = sd / "_failures"
+                sd.mkdir(parents=True, exist_ok=True)
+                if fails:
+                    fd.mkdir(parents=True, exist_ok=True)
+                for uid, isf in pick:
                     im = by_id[uid]
                     try:
                         img = Image.open(im.get("image_path")).convert("RGB")
                     except Exception:
                         continue
                     d = ImageDraw.Draw(img)
-                    for c in _V3.preprocess_frame(im, args.min_conf):     # 후보(파랑) + 값
+                    for c in _V3.preprocess_frame(im, args.min_conf):     # 후보(파랑)+값
                         b = [int(x) for x in c["box"]]
                         d.rectangle(b, outline=(60, 120, 255), width=1)
-                        d.text((b[0], max(0, b[1] - 11)), c["value"], fill=(60, 120, 255))
-                    for gb in gboxes:                                     # 채널 그룹위치(노랑)
+                        d.text((b[0], max(0, b[1] - 11)), c["value"], fill=(90, 160, 255))
+                    for gb in gboxes:                                     # 채널 위치(노랑)
                         d.rectangle([int(x) for x in gb], outline=(255, 210, 0), width=2)
-                    val = pf.get(uid, "")                                 # 선택된 채널값(초록)
-                    if val and box:
+                    val = pf.get(uid, "") or "(none)"
+                    gt = P.gt_from_name(meta.get(uid, uid)) if args.gt_from_filename else None
+                    col = (255, 40, 40) if isf else (0, 230, 0)
+                    lab = f"CH={val}" + (f" gt={gt}" if isf and gt else "")
+                    d.text((10, 10), lab, fill=col)
+                    if box:
                         ib = [int(x) for x in box]
-                        d.text((ib[0], max(0, ib[1] - 24)), f"CH={val}", fill=(0, 230, 0))
-                    img.save(sd / f"{meta.get(uid, uid)}.jpg", quality=85)
+                        d.rectangle(ib, outline=col, width=2)
+                    img.save((fd if isf else sd) / f"{meta.get(uid, uid)}.jpg", quality=85)
                     sv += 1
-            print(f"[step-viz] {sv}장 → {out}/step_viz/ (후보=파랑, 채널위치=노랑, 선택=초록)", flush=True)
+            print(f"[step-viz] {sv}장 → {out}/step_viz/ (후보=파랑, 채널위치=노랑, 선택 맞음=초록/틀림=빨강)", flush=True)
+            print("  → _failures/ 폴더에 틀린 프레임: 후보 파랑박스 중 뭘 골랐고 gt가 뭔지 보임", flush=True)
 
     # === 정확도 ===
     if args.gt_from_filename:
