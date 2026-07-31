@@ -124,52 +124,60 @@ def _assign(slots, c, by_height, band, size_lo, size_hi):
         if m < bd:
             bd, best = m, s
     if best is None:
-        best = {"cx": c["cx"], "cy": c["cy"], "mh": c["h"], "last": -1, "recent": []}
+        best = {"cx": c["cx"], "cy": c["cy"], "mh": c["h"], "last": -1, "recent": [],
+                "present": set(), "vals": {}, "count": 0, "psum": 0.0, "asum": 0.0, "twoloc": 0}
         slots.append(best)
     return best
 
 
 def _update(s, c, i, agreed, mem):
-    """슬롯의 '최근 mem프레임' 관측만 유지(오래된 건 버림) → 위치 변화에 적응 + 신호 유지."""
-    aspect = (c["box"][2] - c["box"][0]) / max(1e-6, (c["box"][3] - c["box"][1]))
-    s["recent"].append((i, c["value"], c["purity"], c["h"], c["cx"], c["cy"], aspect,
-                        1 if c["value"] in agreed else 0))
-    lo = i - mem + 1
-    while s["recent"] and s["recent"][0][0] < lo:               # mem프레임보다 오래된 관측 폐기
-        s["recent"].pop(0)
-    r = s["recent"]; s["last"] = i
-    s["cx"] = sum(e[4] for e in r) / len(r)                     # 위치=최근 평균(드리프트 추적)
-    s["cy"] = sum(e[5] for e in r) / len(r)
+    """위치·높이는 '최근 mem'으로 드리프트 추적. 값다양성·2곳일치·순수도·커버리지는 'lifetime'
+    누적(가끔 뜨는 위치도 놓치지 않게) — 선택 신호는 전체, 위치는 최근."""
+    s["present"].add(i)                                        # lifetime 등장 프레임
+    s["vals"][c["value"]] = s["vals"].get(c["value"], 0) + 1   # lifetime 값 다양성
+    s["count"] += 1
+    s["psum"] += c["purity"]
+    s["asum"] += (c["box"][2] - c["box"][0]) / max(1e-6, (c["box"][3] - c["box"][1]))
+    if c["value"] in agreed:
+        s["twoloc"] += 1
+    s["last"] = i
+    r = s["recent"]                                            # 위치/높이 드리프트용(최근만)
+    r.append((i, c["cx"], c["cy"], c["h"]))
+    while r and r[0][0] < i - mem + 1:
+        r.pop(0)
+    s["cx"] = sum(e[1] for e in r) / len(r)
+    s["cy"] = sum(e[2] for e in r) / len(r)
     s["mh"] = st.median([e[3] for e in r])
 
 
-def _score_persistent(s, i, mem):
-    """(B) '최근 mem프레임' 통계로 선택 점수. 전체 history 아님 → 위치 바뀌면 옛 슬롯 점수 급락."""
-    r = s["recent"]
-    if not r:
+def _score_persistent(s, i):
+    """(B) lifetime 통계로 선택 점수 — 가끔 뜨는 채널 위치도 살아남게."""
+    present = len(s["present"])
+    if present == 0 or s["count"] == 0:
         return 0.0
-    span = min(mem, i + 1)
-    present = len({e[0] for e in r})                            # 최근 등장 프레임 수
-    distinct = len({e[1] for e in r})
+    distinct = len(s["vals"])
     base = (1.0 + 0.2 * distinct) if distinct >= 2 else 0.1     # 값 다양성 자격
-    purity = sum(e[2] for e in r) / len(r)                      # 순수 숫자일수록 ↑(한글오독 ↓)
-    hs = [e[3] for e in r]
+    purity = s["psum"] / s["count"]
+    hs = [e[3] for e in s["recent"]]
     h_cv = (st.pstdev(hs) / (sum(hs) / len(hs))) if len(hs) > 1 and sum(hs) > 0 else 0.0
-    cov = present / max(1, span)                                # 최근 커버리지(끊기면 급락→적응)
-    score = cov * base * (0.55 + 0.45 * purity)                 # 순수도 감점 완화("000 YTN"도 채널)
+    cov = present / max(1, i + 1)                              # lifetime 커버리지
+    score = cov * base * (0.55 + 0.45 * purity)
     if h_cv > 0.30:
-        score *= 0.4                                            # 높이 일관성 필수
-    aspect = sum(e[6] for e in r) / len(r)
+        score *= 0.4
+    aspect = s["asum"] / s["count"]
     if not (0.2 <= aspect <= 8.0):
         score *= 0.2
-    twoloc = sum(e[7] for e in r)
-    if twoloc > 0:                                             # 2곳 일치 = 채널 강한 신호
-        score *= (1.0 + 0.6 * min(twoloc, 6))
+    if s["twoloc"] > 0:                                        # 2곳 일치 = 채널 강한 신호
+        score *= (1.0 + 0.6 * min(s["twoloc"], 6))
     return score
 
 
-def _agree(a, b, min_common=3, ratio=0.6):
-    """두 슬롯이 같은 채널을 다른 위치에서 표시하는가(값이 공통 프레임에서 일치)."""
+def _agree(a, b, min_common=2, ratio=0.6):
+    """두 슬롯이 같은 채널을 다른 위치에서 표시하는가(값이 공통 프레임에서 일치).
+
+    배너가 가끔만 뜨는 위치(좌하단 등)도 놓치지 않도록 최소 공통 프레임은 2로 관대하게.
+    대신 일치 '비율'은 높게(오탐 방지) — 공통 프레임에서 값이 거의 다 같아야 채널 짝으로 인정.
+    """
     common = set(a.get("pf", {})) & set(b.get("pf", {}))
     if len(common) < min_common:
         return False
@@ -202,15 +210,12 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
             if key not in cur or c["conf"] > cur[key][1]:
                 cur[key] = (c["value"], c["conf"], c["box"], s)
         for _k, (v, cf, bx, s) in cur.items():
-            s.setdefault("pf", {})[i] = (v, cf, bx)
-            for f in [f for f in s["pf"] if f < i - mem + 1]:
-                del s["pf"][f]
-        slots = [s for s in slots if i - s["last"] < mem]
-    elig = [s for s in slots if len({e[0] for e in s["recent"]}) >= min_present]
+            s.setdefault("pf", {})[i] = (v, cf, bx)             # pf는 lifetime(일치 판정용)
+    elig = [s for s in slots if len(s["present"]) >= min_present]
     if not elig:
         return None
     n = len(frames)
-    ranked = sorted(elig, key=lambda s: -_score_persistent(s, n - 1, mem))
+    ranked = sorted(elig, key=lambda s: -_score_persistent(s, n - 1))
     top = ranked[0]
     group = [top] + [s for s in ranked[1:] if _agree(top, s)]    # 채널 위치 그룹(예: 좌하단+우상단)
     locs = [(s["cx"], s["cy"], s["mh"]) for s in group]
