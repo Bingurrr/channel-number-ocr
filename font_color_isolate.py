@@ -96,10 +96,12 @@ def main():
     ap.add_argument("--out", required=True, help="결과 저장 폴더")
     ap.add_argument("--roi", default=None, help="정규화 채널 ROI x1,y1,x2,y2")
     ap.add_argument("--field-box-from", default=None, help="profile_report.json (channel_field_box 픽셀)")
+    ap.add_argument("--ocr-json", default=None,
+                    help="v1 run의 full_ocr.json. 성공 detection의 tight 숫자박스에서 폰트색 학습(권장)")
     ap.add_argument("--rec-model-dir", default=None, help="파인튜닝 rec 디렉토리")
     ap.add_argument("--learn-conf", type=float, default=0.7, help="이 conf 이상 프레임에서만 폰트색 학습")
-    ap.add_argument("--min-frac", type=float, default=0.10, help="폰트색 판정: 박스에서 이 비율 이상 나온 색")
-    ap.add_argument("--tol", type=float, default=60, help="색분리 허용 거리(클수록 폰트색 근처 더 포함)")
+    ap.add_argument("--margin", type=float, default=1.0,
+                    help="색분리 보수성: 폰트에 이만큼 배 더 가까워야 글자로 인정(>1이면 더 지움)")
     ap.add_argument("--viz-n", type=int, default=60)
     args = ap.parse_args()
 
@@ -132,16 +134,50 @@ def main():
         rois.append(crop)
         reads.append(rec_read(rec, crop, tmp))
 
-    # ── 폰트색 학습: 고conf(성공) 프레임의 ROI에서, 히스토그램(10%↑+프레임간 일관) ──
-    learn_crops = [rois[i] for i in range(len(imgs)) if reads[i][1] >= args.learn_conf and rois[i] is not None]
-    if not learn_crops:            # 성공 프레임 없으면 전체로 학습 (차선)
-        print(f"경고: conf>={args.learn_conf} 프레임 없음 → 전체 {len(imgs)}장으로 학습", flush=True)
+    # ── 폰트색 학습 소스 결정 ──
+    # 최선: v1 full_ocr.json의 '성공 detection tight bbox' (폰트획이 대부분 → 배경 안 잡힘)
+    # 차선: 느슨한 ROI의 고conf crop (배경 섞여 부정확할 수 있음)
+    learn_crops = []
+    if args.ocr_json and field_box:
+        oj = {im["image_id"]: im for im in json.loads(Path(args.ocr_json).read_text()).get("images", [])}
+        fx1, fy1, fx2, fy2 = field_box
+        used = 0
+        for p in imgs:
+            im = oj.get(p.stem) or oj.get(p.stem.split("__")[-1])
+            if not im:
+                continue
+            best = None
+            for c in im.get("candidates", []):
+                b = c.get("bbox_xyxy"); t = c.get("text", "")
+                if not b or len(b) != 4 or not re.sub(r"\D", "", str(t)):
+                    continue
+                cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+                if not (fx1 <= cx <= fx2 and fy1 <= cy <= fy2):
+                    continue
+                cf = float(c.get("ocr_conf", 0) or 0)
+                if cf >= args.learn_conf and (best is None or cf > best[0]):
+                    best = (cf, b)
+            if best:
+                try:
+                    img = Image.open(p).convert("RGB")
+                    x1, y1, x2, y2 = (int(v) for v in best[1])
+                    learn_crops.append(img.crop((x1, y1, x2, y2))); used += 1
+                except Exception:
+                    pass
+        print(f"[tight bbox] full_ocr.json에서 성공 detection {used}개 → 그 숫자박스로 폰트색 학습", flush=True)
+
+    if not learn_crops:            # 차선: 느슨한 ROI 고conf
+        learn_crops = [rois[i] for i in range(len(imgs)) if reads[i][1] >= args.learn_conf and rois[i] is not None]
+    if not learn_crops:            # 그것도 없으면 전체
+        print(f"경고: 성공 프레임 없음 → 전체 {len(imgs)}장으로 학습(부정확)", flush=True)
         learn_crops = [r for r in rois if r is not None]
-    font = PD.learn_font_color_hist(learn_crops, min_frac=args.min_frac)
+    # Otsu 전경분리로 (폰트색, 배경색) 학습 → 최근접 판정용
+    font, bgcol = PD.learn_font_color_otsu(learn_crops)
     fs = "None" if font is None else tuple(int(v) for v in font)
-    print(f"학습에 쓴 프레임 {len(learn_crops)}장 → 폰트색(히스토그램)={fs}", flush=True)
+    bs = "None" if bgcol is None else tuple(int(v) for v in bgcol)
+    print(f"학습에 쓴 crop {len(learn_crops)}장 → 폰트색={fs}  배경색={bs}", flush=True)
     if font is None:
-        print("경고: 폰트색 학습 실패. --min-frac 낮추거나 ROI 확인.", flush=True)
+        print("경고: 폰트색 학습 실패. --learn-conf 낮추거나 ROI/ocr-json 확인.", flush=True)
 
     # ── PASS 2: 색분리 → 재읽기 → 저장 ──
     rows = []
@@ -150,7 +186,7 @@ def main():
         if rois[i] is None:
             continue
         old_d, old_c = reads[i]
-        clean, mask = PD.isolate_contrast(rois[i], font, tol=args.tol)   # 대비색 배경
+        clean, mask = PD.isolate_contrast(rois[i], font, bg=bgcol, margin=args.margin)  # 최근접+대비배경
         new_d, new_c = rec_read(rec, clean, tmp)
         clean.save(clean_d / f"{p.stem}.png")
         imp = bool(new_d) and (not old_d or new_c > old_c + 0.05)
@@ -158,7 +194,7 @@ def main():
         rows.append({"frame": p.name, "old_read": old_d, "old_conf": round(old_c, 3),
                      "new_read": new_d, "new_conf": round(new_c, 3), "improved": imp})
         if viz < args.viz_n:
-            PD.make_viz(rois[i], mask, clean, font, None,
+            PD.make_viz(rois[i], mask, clean, font, bgcol,
                         text=f"{old_d}({old_c:.2f})->{new_d}({new_c:.2f})").save(viz_d / f"{p.stem}.jpg")
             viz += 1
 

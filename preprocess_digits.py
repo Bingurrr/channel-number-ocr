@@ -110,21 +110,72 @@ def learn_font_color_temporal(crops, range_thr=28, quant=20, min_static=8):
     return np.array(best, dtype=np.float32)
 
 
-def isolate_contrast(crop, font, tol=60, pad=5, min_pixels=6):
-    """[사용자 방식] 폰트색 근처 픽셀만 원색 유지, 나머지는 '폰트색 대비색'으로 채움.
+def _otsu(gray):
+    h, _ = np.histogram(gray, 256, (0, 256)); tot = gray.size
+    s = float((np.arange(256) * h).sum()); sB = wB = 0.0; best = (-1.0, 128)
+    for t in range(256):
+        wB += h[t]
+        if wB == 0:
+            continue
+        wF = tot - wB
+        if wF == 0:
+            break
+        sB += t * h[t]; mB = sB / wB; mF = (s - sB) / wF
+        v = wB * wF * (mB - mF) ** 2
+        if v > best[0]:
+            best = (v, t)
+    return best[1]
 
-    흰 폰트 → 검정 배경, 어두운 폰트 → 흰 배경 → 항상 고대비 → 잘 읽힘.
-    반환 (clean_img, mask). font None이면 원본.
+
+def learn_font_color_otsu(crops, min_fg=6):
+    """[정답] 타이트 숫자박스에서 Otsu 전경분리 → (폰트색, 배경색). 극성은 테두리로 판정.
+
+    글자획은 항상 소수 픽셀이라 '최빈색'은 배경을 잡는다(틀림). 대신 밝기 이분(Otsu) 후
+    '테두리를 채운 쪽=배경', 반대쪽=글자로 보고 각 픽셀 색의 median을 반환.
+    폰트색+배경색 둘 다 줘야 isolate가 '최근접'으로 비슷한 색도 잘 가른다.
+    crops = 성공 detection의 타이트 숫자박스들. 반환 (font_rgb, bg_rgb) 또는 (None, None).
+    """
+    fgs, bgs = [], []
+    for c in crops:
+        arr = np.asarray(c.convert("RGB"), dtype=np.float32)
+        if arr.shape[0] < 4 or arr.shape[1] < 4:
+            continue
+        g = arr.mean(axis=2)
+        thr = _otsu(g)
+        bw = max(1, int(min(g.shape) * 0.18))
+        border = np.concatenate([g[:bw].ravel(), g[-bw:].ravel(), g[:, :bw].ravel(), g[:, -bw:].ravel()])
+        bg_is_bright = border.mean() > thr                  # 배경이 밝은 쪽인가
+        fg = (g <= thr) if bg_is_bright else (g > thr)      # 글자 = 배경 반대쪽
+        if fg.sum() < min_fg or (~fg).sum() < min_fg:
+            continue
+        fgs.append(np.median(arr[fg], axis=0)); bgs.append(np.median(arr[~fg], axis=0))
+    if not fgs:
+        return None, None
+    return (np.median(np.stack(fgs), axis=0).astype(np.float32),
+            np.median(np.stack(bgs), axis=0).astype(np.float32))
+
+
+def isolate_contrast(crop, font, bg=None, tol=60, margin=1.0, pad=5, min_pixels=6):
+    """[사용자 방식] 폰트색 픽셀만 원색 유지, 나머지는 '폰트색 대비색'으로 채움.
+
+    배경색(bg)을 주면 '폰트 vs 배경 최근접'으로 판정 → 폰트에 다소 비슷해도 배경에 더
+    가까우면 지워짐(고정 tol이 큰 문제 해결). bg 없으면 절대거리 tol 사용.
+    margin: font에 이만큼 '더' 가까워야 글자로 인정(>1이면 보수적으로 더 지움).
+    흰 폰트 → 검정 배경, 어두운 폰트 → 흰 배경 → 고대비. 반환 (clean, mask).
     """
     arr = np.asarray(crop.convert("RGB"), dtype=np.float32)
     if font is None:
         return crop.convert("RGB"), Image.new("L", crop.size, 0)
-    d = np.linalg.norm(arr - font, axis=2)
-    mask = d < tol
+    df = np.linalg.norm(arr - font, axis=2)
+    if bg is not None:
+        db = np.linalg.norm(arr - bg, axis=2)
+        mask = df * margin < db                             # 폰트에 더 가까운 픽셀만
+    else:
+        mask = df < tol
     lum = 0.299 * font[0] + 0.587 * font[1] + 0.114 * font[2]
-    bgc = (0, 0, 0) if lum > 110 else (255, 255, 255)   # 폰트 밝으면 배경 검정
+    bgc = (0, 0, 0) if lum > 110 else (255, 255, 255)       # 폰트 밝으면 배경 검정
     out = np.empty(arr.shape, dtype=np.uint8); out[:] = bgc
-    out[mask] = arr[mask].astype(np.uint8)              # 폰트픽셀은 원색 유지
+    out[mask] = arr[mask].astype(np.uint8)                  # 폰트픽셀은 원색 유지
     ys, xs = np.where(mask)
     if len(xs) >= min_pixels:
         x0, x1 = max(0, xs.min() - pad), min(arr.shape[1], xs.max() + pad + 1)
