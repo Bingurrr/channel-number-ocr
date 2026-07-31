@@ -17,7 +17,9 @@ import argparse
 import csv
 import json
 import os
+import re
 import shutil
+import tempfile
 from pathlib import Path
 
 import predict_folder as P
@@ -75,6 +77,15 @@ def main():
                     help="[v3] force-answer 재읽기 시 여러 프레임에서 폰트색을 학습해 숫자만 "
                          "남기고 배경 제거 후 rec (유사배경/저대비 프레임 개선). "
                          "분리 시각화는 out/color_isolate_viz/ 에 저장")
+    ap.add_argument("--font-isolate", action="store_true",
+                    help="[v3] slot이 찾은 채널박스에서 성공 detection의 폰트색을 Otsu로 학습 → "
+                         "각 프레임 채널박스를 '폰트 vs 배경 최근접'으로 분리(흰-on-흰 구제) → "
+                         "재읽기. out/font_isolate_viz/, font_isolate_clean/, summary 저장")
+    ap.add_argument("--font-isolate-conf", type=float, default=0.7,
+                    help="font-isolate: 폰트색 학습에 쓸 성공 detection 최소 conf")
+    ap.add_argument("--font-isolate-margin", type=float, default=1.0,
+                    help="font-isolate: 색분리 보수성(>1이면 배경 더 지움, <1이면 덜)")
+    ap.add_argument("--font-isolate-viz", type=int, default=30, help="font-isolate: 폴더당 시각화 장수")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -230,6 +241,75 @@ def main():
             t_fill += fill; t_ovr += ovr
             print(f"[second-channel/v3] {g}: 2번째영역 votes={region[2]}  보완 {fill}  교정 {ovr}", flush=True)
         print(f"[second-channel/v3] 합계: 보완 {t_fill}  교정 {t_ovr} 프레임", flush=True)
+
+    # === [v3] 폰트색 학습 → 채널박스 색분리 → 재읽기 (slot 결과 직접 사용, 파일왕복 X) ===
+    if args.font_isolate:
+        import preprocess_digits as PD
+        import font_color_isolate as FCI
+        from PIL import Image as _Img
+        rd_fi = Path(rec_dir) if rec_dir.lower() not in ("", "none") else None
+        if rd_fi is not None and not rd_fi.is_absolute():
+            rd_fi = Path(__file__).resolve().parent / rd_fi
+        rec = FCI.load_recognizer(str(rd_fi) if rd_fi and (rd_fi / "inference.pdiparams").exists() else None)
+        ftmp = Path(tempfile.mkdtemp(prefix="fontiso_"))
+        vizdir = out / "font_isolate_viz"; cleandir = out / "font_isolate_clean"
+        for d in (vizdir, cleandir):
+            shutil.rmtree(d, ignore_errors=True); d.mkdir(parents=True, exist_ok=True)
+        fi_rows = []; t_imp = 0
+        for g, (entry, field) in per_folder.items():
+            if not field:
+                continue
+            fx1, fy1, fx2, fy2 = field["median_box"]
+            ok_uids = [u for u in sorted(seqs.get(g, [])) if u in by_id]
+            # 1) 폰트색 학습: 채널박스 안 '성공(고conf) 숫자 detection'의 tight bbox에서
+            tight = []
+            for uid in ok_uids:
+                im = by_id[uid]
+                for c in im.get("candidates", []):
+                    b = c.get("bbox_xyxy"); t = c.get("text", "")
+                    if not b or len(b) != 4 or not re.sub(r"\D", "", str(t)):
+                        continue
+                    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+                    if not (fx1 <= cx <= fx2 and fy1 <= cy <= fy2):
+                        continue
+                    if float(c.get("ocr_conf", 0) or 0) < args.font_isolate_conf:
+                        continue
+                    try:
+                        tight.append(_Img.open(im["image_path"]).convert("RGB").crop(
+                            (int(b[0]), int(b[1]), int(b[2]), int(b[3]))))
+                    except Exception:
+                        pass
+            font, bgcol = PD.learn_font_color_otsu(tight) if tight else (None, None)
+            entry["font_color"] = None if font is None else [int(v) for v in font]
+            entry["bg_color"] = None if bgcol is None else [int(v) for v in bgcol]
+            # 2) 각 프레임 채널박스 색분리 → 재읽기 → viz
+            n = 0
+            for uid in ok_uids:
+                im = by_id[uid]
+                try:
+                    crop = _Img.open(im["image_path"]).convert("RGB").crop((int(fx1), int(fy1), int(fx2), int(fy2)))
+                except Exception:
+                    continue
+                clean, mask = PD.isolate_contrast(crop, font, bg=bgcol, margin=args.font_isolate_margin)
+                new_d, new_c = FCI.rec_read(rec, clean, ftmp)
+                old_v = P._dg(field["per_frame"].get(uid, ""))
+                imp = bool(new_d) and (not old_v)
+                t_imp += int(imp)
+                nm = meta.get(uid, uid)
+                fi_rows.append({"folder": g, "frame": nm, "old": old_v or "none",
+                                "new": new_d, "new_conf": round(new_c, 3), "was_none_now_read": imp})
+                if n < args.font_isolate_viz:
+                    clean.save(cleandir / f"{nm}.png")
+                    PD.make_viz(crop, mask, clean, font, bgcol,
+                                text=f"{old_v or 'none'}->{new_d}({new_c:.2f})").save(vizdir / f"{nm}.jpg")
+                    n += 1
+            print(f"[font-isolate] {g}: 폰트색={entry['font_color']} 배경색={entry['bg_color']} viz {n}장", flush=True)
+        with (out / "font_isolate_summary.csv").open("w", newline="", encoding="utf-8-sig") as f:
+            w = csv.DictWriter(f, fieldnames=["folder", "frame", "old", "new", "new_conf", "was_none_now_read"])
+            w.writeheader(); w.writerows(fi_rows)
+        shutil.rmtree(ftmp, ignore_errors=True)
+        print(f"[font-isolate] none이었다가 색분리로 읽힌 프레임 {t_imp}개 → {out}/font_isolate_viz/, "
+              f"font_isolate_summary.csv", flush=True)
 
     # === (선택) ROI crop full-OCR 재읽기 ===
     if args.force_read:
