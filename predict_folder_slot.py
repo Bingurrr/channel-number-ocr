@@ -79,7 +79,8 @@ def main():
                "PP-OCRv4_mobile_det", "--text-recognition-model-name", "en_PP-OCRv4_mobile_rec",
                "--progress-every", 200]
     # rec 모델 선택: --rec 프리셋이 있으면 그걸로, 없으면 --rec-model-dir.
-    REC_PRESETS = {"v4": "models/full_image_ocr/en_PP-OCRv4_mobile_rec_ft",
+    REC_PRESETS = {"v3": "models/full_image_ocr/en_PP-OCRv4_mobile_rec_ft",
+                   "v4": "models/full_image_ocr/rec_v4",
                    "v6small": "models/full_image_ocr/rec_v6small",
                    "v6tiny": "models/full_image_ocr/rec_v6tiny",
                    "stock": "none"}

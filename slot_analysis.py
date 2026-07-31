@@ -157,6 +157,54 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
     return out
 
 
+def resolve_channel_per_frame(frames, ids, chan_boxes, chan_values, conf_thr=0.3,
+                              near=0.06, min_sep=0.05):
+    """프레임마다 2위치 중 '더 확실한' 채널값을 고른다 (사용자 설계).
+
+    우선순위:
+      1) 같은 값이 2곳(멀리 떨어진 위치)에 → 거의 확정 채널 (2-location 합의, 큰 보너스)
+      2) 알려진 채널영역(chan_boxes) 근처 + 높은 conf
+      3) 후보 값이 폴더의 채널값 집합(chan_values)에 있어야 함 (엉뚱한 숫자 배제)
+    위치 가변/간헐 출현에 강함(위치 무관 + 값 집합으로 제한).
+
+    반환: {uid: (value, conf, agree)}  agree=2곳합의 여부
+    """
+    cv = set(_cnorm(v) for v in chan_values)
+    out = {}
+    for fi, im in enumerate(frames):
+        W = float(im.get("image_width") or 1280) or 1280
+        H = float(im.get("image_height") or 720) or 720
+        byval = {}
+        for c in im.get("candidates", []):
+            b = c.get("bbox_xyxy"); t = c.get("text", "")
+            if not b or len(b) != 4 or classify(t) != "channelnum":
+                continue
+            v = _cnorm(best_digit(t))
+            cf = float(c.get("ocr_conf", 0.5) or 0.5)
+            if not v or cf < conf_thr:
+                continue
+            cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
+            byval.setdefault(v, []).append((cx, cy, cf))
+        best = None
+        for v, pts in byval.items():
+            distinct = []
+            for p in pts:
+                if all((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 >= min_sep ** 2 for q in distinct):
+                    distinct.append(p)
+            agree = len(distinct) >= 2                       # 2곳 합의
+            if not (agree or v in cv):                       # 채널값 아니면 배제
+                continue
+            maxconf = max(p[2] for p in pts)
+            near_chan = any(min(((p[0] - bx) ** 2 + (p[1] - by) ** 2) ** 0.5
+                                for bx, by in chan_boxes) < near for p in pts) if chan_boxes else False
+            score = maxconf + (0.5 if agree else 0.0) + (0.2 if near_chan else 0.0)
+            if best is None or score > best[0]:
+                best = (score, v, maxconf, agree)
+        if best:
+            out[ids[fi]] = (best[1], best[2], best[3])
+    return out
+
+
 def analyze(frames, ids, pos_thr=0.04, conf_thr=0.3):
     """Return (primary, duals, all_sorted). primary = channel field slot (or None).
 
