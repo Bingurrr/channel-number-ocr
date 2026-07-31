@@ -187,44 +187,61 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
     위치는 '묶는 키', 선택은 '내용'(값다양성·순수도·높이·2곳일치).
     """
     mem = max(2, window)
+    # ── PASS 1: 스트리밍으로 채널 '위치(그룹)'를 확정 (최근 통계, 적응) ──
     slots = []
-    per_frame, per_conf, boxes = {}, {}, []
-    prev = None
+    pre_all = []
     for i in range(len(frames)):
         cands = preprocess_frame(frames[i], conf_thr)
+        pre_all.append(cands)
         agreed = within_frame_agreed(cands)
-        cur = {}                                                # id(slot) -> (value, conf, box)
+        cur = {}
         for c in cands:
             s = _assign(slots, c, by_height, band, size_lo, size_hi)
             _update(s, c, i, agreed, mem)
             key = id(s)
             if key not in cur or c["conf"] > cur[key][1]:
-                cur[key] = (c["value"], c["conf"], c["box"])
-        for key, (v, cf, bx) in cur.items():                   # 슬롯별 프레임값 기록(교차채움/일치용)
-            for s in slots:
-                if id(s) == key:
-                    s.setdefault("pf", {})[i] = (v, cf, bx)
-                    for f in [f for f in s["pf"] if f < i - mem + 1]:
-                        del s["pf"][f]
-                    break
-        slots = [s for s in slots if i - s["last"] < mem]       # 오래 안 보인 슬롯 제거(적응)
-        elig = [s for s in slots
-                if not (min(mem, i + 1) >= min_present and len({e[0] for e in s["recent"]}) < min_present)]
-        if not elig:
-            continue
-        ranked = sorted(elig, key=lambda s: -(_score_persistent(s, i, mem)
-                        * (1.0 + hysteresis if prev is not None and abs(s["cy"] - prev[1]) < band
-                           and abs(s["cx"] - prev[0]) < max(band, 0.15) else 1.0)))
-        top = ranked[0]
-        prev = (top["cx"], top["cy"], top["mh"])
-        group = [top] + [s for s in ranked[1:] if _agree(top, s)]   # 채널 2곳 그룹
-        picks = [cur[id(s)] for s in group if id(s) in cur]         # 이 프레임에 잡힌 그룹 값들
-        if picks:
-            v, conf, box = max(picks, key=lambda x: x[1])           # conf 높은 위치로 읽음
-            per_frame[ids[i]] = v; per_conf[ids[i]] = conf; boxes.append(box)
+                cur[key] = (c["value"], c["conf"], c["box"], s)
+        for _k, (v, cf, bx, s) in cur.items():
+            s.setdefault("pf", {})[i] = (v, cf, bx)
+            for f in [f for f in s["pf"] if f < i - mem + 1]:
+                del s["pf"][f]
+        slots = [s for s in slots if i - s["last"] < mem]
+    elig = [s for s in slots if len({e[0] for e in s["recent"]}) >= min_present]
+    if not elig:
+        return None
+    n = len(frames)
+    ranked = sorted(elig, key=lambda s: -_score_persistent(s, n - 1, mem))
+    top = ranked[0]
+    group = [top] + [s for s in ranked[1:] if _agree(top, s)]    # 채널 위치 그룹(예: 좌하단+우상단)
+    locs = [(s["cx"], s["cy"], s["mh"]) for s in group]
+    group_boxes = []
+    for s in group:
+        bx = [p[2] for p in s["pf"].values()]
+        if bx:
+            group_boxes.append([st.median([b[k] for b in bx]) for k in range(4)])
+
+    # ── PASS 2: 매 프레임 '그룹 위치들' 중 실제로 읽힌 곳(conf 높은)에서 읽음 → 교차 채움 ──
+    per_frame, per_conf, boxes = {}, {}, []
+    for i, cands in enumerate(pre_all):
+        best = None
+        for c in cands:
+            for lx, ly, lh in locs:
+                if lh > 0 and not (size_lo <= c["h"] / lh <= size_hi):
+                    continue
+                if by_height:
+                    if min(abs(c["cy"] - ly), abs(c["cx"] - lx)) > band:
+                        continue
+                elif ((c["cx"] - lx) ** 2 + (c["cy"] - ly) ** 2) ** 0.5 > band:
+                    continue
+                if best is None or c["conf"] > best[1]:
+                    best = (c["value"], c["conf"], c["box"])
+                break
+        if best:
+            per_frame[ids[i]] = best[0]; per_conf[ids[i]] = best[1]; boxes.append(best[2])
     if not boxes:
         return None
     box = [st.median([b[k] for b in boxes]) for k in range(4)]
     return {"box": box, "per_frame": per_frame, "per_frame_conf": per_conf,
+            "locs": locs, "group_boxes": group_boxes,
             "score": round(len(per_frame) / max(1, len(ids)), 3),
             "distinct": len({_cnorm(v) for v in per_frame.values()}), "duals": []}

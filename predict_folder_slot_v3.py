@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--keep-staged", action="store_true")
     ap.add_argument("--no-qualitative", action="store_true")
     ap.add_argument("--samples-per-folder", type=int, default=20)
+    ap.add_argument("--viz-steps", type=int, default=0, metavar="N",
+                    help="폴더당 N장: 후보 박스(파랑)+채널 그룹위치(노랑)+선택값(초록) 시각화")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -87,11 +89,12 @@ def main():
         report.append({"folder": g, "channel_field_box": box,
                        "distinct_values": primary["distinct"] if primary else 0,
                        "coverage": round(len(pf) / max(1, len(ok)), 3)})
-        per_folder[g] = (box, pf)
+        per_folder[g] = (box, pf, primary.get("group_boxes", []) if primary else [])
         for uid, v in sorted(pf.items()):
             rows.append({"folder": g, "frame": meta.get(uid, uid), "channel_number": v})
             pred_by_uid[uid] = v
-        print(f"  {g:<40} box={box} cov={report[-1]['coverage']}", flush=True)
+        gb = primary.get("group_boxes", []) if primary else []
+        print(f"  {g:<40} box={box} cov={report[-1]['coverage']} 채널위치={len(gb)}곳", flush=True)
 
     with (out / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["folder", "frame", "channel_number"])
@@ -107,7 +110,7 @@ def main():
         if Image is not None:
             norm = lambda s: str(int(s)) if str(s).isdigit() else str(s)
             saved = 0
-            for g, (box, pf) in per_folder.items():
+            for g, (box, pf, _gb) in per_folder.items():
                 if not box:
                     continue
                 ib = [int(v) for v in box]
@@ -144,6 +147,39 @@ def main():
                     img.save((fdir if isf else qd) / f"{meta.get(uid, uid)}.jpg", quality=88)
                     saved += 1
             print(f"정성 이미지 {saved}장 (성공 샘플 + _failures/ 실패 전부)", flush=True)
+
+    # === step-viz: 후보 박스 + 채널 그룹위치 + 선택값 ===
+    if args.viz_steps > 0:
+        try:
+            from PIL import Image, ImageDraw
+            import slot_v3 as _V3
+        except Exception:
+            Image = None
+        if Image is not None:
+            sv = 0
+            for g, (box, pf, gboxes) in per_folder.items():
+                allu = [u for u in sorted(seqs.get(g, [])) if u in by_id]
+                sd = out / "step_viz" / _safe(g, root); sd.mkdir(parents=True, exist_ok=True)
+                for uid in allu[:: max(1, len(allu) // max(1, args.viz_steps))][:args.viz_steps]:
+                    im = by_id[uid]
+                    try:
+                        img = Image.open(im.get("image_path")).convert("RGB")
+                    except Exception:
+                        continue
+                    d = ImageDraw.Draw(img)
+                    for c in _V3.preprocess_frame(im, args.min_conf):     # 후보(파랑) + 값
+                        b = [int(x) for x in c["box"]]
+                        d.rectangle(b, outline=(60, 120, 255), width=1)
+                        d.text((b[0], max(0, b[1] - 11)), c["value"], fill=(60, 120, 255))
+                    for gb in gboxes:                                     # 채널 그룹위치(노랑)
+                        d.rectangle([int(x) for x in gb], outline=(255, 210, 0), width=2)
+                    val = pf.get(uid, "")                                 # 선택된 채널값(초록)
+                    if val and box:
+                        ib = [int(x) for x in box]
+                        d.text((ib[0], max(0, ib[1] - 24)), f"CH={val}", fill=(0, 230, 0))
+                    img.save(sd / f"{meta.get(uid, uid)}.jpg", quality=85)
+                    sv += 1
+            print(f"[step-viz] {sv}장 → {out}/step_viz/ (후보=파랑, 채널위치=노랑, 선택=초록)", flush=True)
 
     # === 정확도 ===
     if args.gt_from_filename:
