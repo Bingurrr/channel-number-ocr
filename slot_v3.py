@@ -225,12 +225,13 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
         if bx:
             group_boxes.append([st.median([b[k] for b in bx]) for k in range(4)])
 
-    # ── PASS 2: 매 프레임 '그룹 위치들' 중 '깨끗하고(안 겹침) conf 높은' 곳에서 읽음 → 교차 채움 ──
+    # ── PASS 2: 매 프레임 그룹 위치들에서 읽되, '같은 값이 2곳에 나오면(002=2) 그게 채널'
+    #    (프레임내 일치 우선) → 광고 속 딴 숫자(881 등 한 곳뿐)는 배제. 일치 없으면 깨끗+conf. ──
     per_frame, per_conf, boxes = {}, {}, []
     for i, cands in enumerate(pre_all):
-        best = None                                             # (weight, value, conf, box)
+        reads = []                                             # (value, conf, purity, box, loc_idx)
         for c in cands:
-            for lx, ly, lh in locs:
+            for li, (lx, ly, lh) in enumerate(locs):
                 if lh > 0 and not (size_lo <= c["h"] / lh <= size_hi):
                     continue
                 if by_height:
@@ -238,12 +239,17 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
                         continue
                 elif ((c["cx"] - lx) ** 2 + (c["cy"] - ly) ** 2) ** 0.5 > band:
                     continue
-                w = c["conf"] * (0.5 + 0.5 * c["purity"])       # 안 겹친(순수) 읽기 우선
-                if best is None or w > best[0]:
-                    best = (w, c["value"], c["conf"], c["box"])
+                reads.append((c["value"], c["conf"], c["purity"], c["box"], li))
                 break
-        if best:
-            per_frame[ids[i]] = best[1]; per_conf[ids[i]] = best[2]; boxes.append(best[3])
+        if not reads:
+            continue
+        loc_of_val = defaultdict(set)
+        for v, cf, pu, bx, li in reads:
+            loc_of_val[v].add(li)
+        agreed = {v for v, ls in loc_of_val.items() if len(ls) >= 2}   # 2곳 이상 같은 값 = 채널
+        pool = [r for r in reads if r[0] in agreed] if agreed else reads
+        v, cf, pu, bx, li = max(pool, key=lambda r: r[1] * (0.5 + 0.5 * r[2]))  # 깨끗+conf
+        per_frame[ids[i]] = v; per_conf[ids[i]] = cf; boxes.append(bx)
     if not boxes:
         return None
     box = [st.median([b[k] for b in boxes]) for k in range(4)]
