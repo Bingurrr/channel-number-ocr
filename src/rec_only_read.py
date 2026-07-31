@@ -42,11 +42,25 @@ def best_digit(text):
     return only[:5]
 
 
+def _model_name_of(model_dir):
+    """inference.yml에서 model_name 자동 감지 → v4/v6 등 버전 무관."""
+    y = Path(model_dir) / "inference.yml"
+    if y.exists():
+        try:
+            import yaml
+            n = yaml.safe_load(open(y)).get("Global", {}).get("model_name")
+            if n:
+                return n
+        except Exception:
+            pass
+    return "en_PP-OCRv4_mobile_rec"
+
+
 def load_recognizer(model_dir):
     from paddleocr import TextRecognition
-    # model_dir만 주면 paddlex가 model_name 불일치로 assert → name도 함께 전달.
+    # model_dir의 실제 model_name을 감지해서 전달 (v6 등 불일치 방지).
     if model_dir and Path(model_dir).exists():
-        return TextRecognition(model_name="en_PP-OCRv4_mobile_rec", model_dir=str(model_dir))
+        return TextRecognition(model_name=_model_name_of(model_dir), model_dir=str(model_dir))
     return TextRecognition(model_name="en_PP-OCRv4_mobile_rec")
 
 
