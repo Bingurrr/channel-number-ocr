@@ -94,13 +94,9 @@ def _metrics(s, n, W0, H0):
         score *= 0.15
     if area > 0.06:
         score *= 0.15
-    # 위치 안정성: 고정 박스 강하게 선호, '움직이는 박스'는 강하게 억제
-    if pos_std > 0.06:
-        score *= 0.2            # 많이 움직임 → 이동박스 억제 (skylife)
-    elif pos_std > 0.03:
-        score *= 0.55
-    else:
-        score *= 1.25           # 위치 고정 → 보너스
+    # 위치 안정성: 약한 신호로만. (읽히는 곳 우선 — 고정이라도 못 읽으면 소용없음)
+    if pos_std > 0.12:
+        score *= 0.7            # 아주 많이 움직일 때만 약한 페널티(순수 배경노이즈 방지)
     if h_cv > 0.35:
         score *= 0.6
     # 프레임별 채널값 + 신뢰도(같은 프레임에 여러 후보면 최고 conf 채택)
@@ -158,16 +154,17 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
 
 
 def resolve_channel_per_frame(frames, ids, chan_boxes, chan_values, conf_thr=0.3,
-                              near=0.06, min_sep=0.05):
-    """프레임마다 2위치 중 '더 확실한' 채널값을 고른다 (사용자 설계).
+                              near=0.06, min_sep=0.05, high_conf=0.6):
+    """프레임마다 '읽히는 곳' 우선으로 채널값을 고른다 (사용자 설계).
 
-    우선순위:
-      1) 같은 값이 2곳(멀리 떨어진 위치)에 → 거의 확정 채널 (2-location 합의, 큰 보너스)
-      2) 알려진 채널영역(chan_boxes) 근처 + 높은 conf
-      3) 후보 값이 폴더의 채널값 집합(chan_values)에 있어야 함 (엉뚱한 숫자 배제)
-    위치 가변/간헐 출현에 강함(위치 무관 + 값 집합으로 제한).
-
-    반환: {uid: (value, conf, agree)}  agree=2곳합의 여부
+    핵심: 위치가 고정이냐 아니냐가 아니라 '잘 읽혔냐(conf)'로 고른다.
+      우측상단(고정, 못읽음) 대신 좌측하단(이동, 잘읽힘 예: '000 YTN'→0)을 채택.
+    후보 채택 조건 (엉뚱한 숫자 배제):
+      · 같은 값이 2곳(멀리) → 합의(강함)  또는
+      · 값이 폴더 채널값 집합에 있음        또는
+      · 단일이라도 high_conf 이상 (잘 읽힌 채널로 신뢰)
+    점수 = conf + 합의보너스 + 채널영역근처보너스.
+    반환: {uid: (value, conf, agree)}
     """
     cv = set(_cnorm(v) for v in chan_values)
     out = {}
@@ -192,9 +189,9 @@ def resolve_channel_per_frame(frames, ids, chan_boxes, chan_values, conf_thr=0.3
                 if all((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 >= min_sep ** 2 for q in distinct):
                     distinct.append(p)
             agree = len(distinct) >= 2                       # 2곳 합의
-            if not (agree or v in cv):                       # 채널값 아니면 배제
-                continue
             maxconf = max(p[2] for p in pts)
+            if not (agree or v in cv or maxconf >= high_conf):   # 잘읽힌 단일도 허용
+                continue
             near_chan = any(min(((p[0] - bx) ** 2 + (p[1] - by) ** 2) ** 0.5
                                 for bx, by in chan_boxes) < near for p in pts) if chan_boxes else False
             score = maxconf + (0.5 if agree else 0.0) + (0.2 if near_chan else 0.0)
