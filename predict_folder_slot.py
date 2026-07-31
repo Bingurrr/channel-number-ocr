@@ -90,8 +90,11 @@ def main():
                     help="[v3] 채널박스가 채널마다 다른 위치에 뜨는 UI: 위치 대신 '글자 높이(폰트 "
                          "크기)'로 클러스터링/선택. 위치 이동에 강함(값다양성+채널숫자+높이일관성으로 선택)")
     ap.add_argument("--window", type=int, default=0, metavar="N",
-                    help="[on-device] FIFO 큐: 각 프레임을 '직전 N개'로만 클러스터링(전체 아님). "
-                         "TV CPU 실시간 배포와 동일. 0=전체(오프라인). 실시간은 5 권장")
+                    help="[on-device] 워밍업-락: 처음 N프레임으로 채널영역을 한 번 확정 → 이후 각 "
+                         "프레임은 그 영역에서 O(1)로 읽기(전체 배치 안 함, TV CPU용). 0=오프라인 전체. "
+                         "N은 영역확정용이라 15~30 권장(5는 신호 약해 불안정)")
+    ap.add_argument("--relock-every", type=int, default=0, metavar="K",
+                    help="on-device: K프레임마다 최근 N개로 채널영역 재확정(느린 적응). 0=고정")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -143,9 +146,10 @@ def main():
         frames = [by_id[u] for u in ok_uids]
         if not frames:
             continue
-        if args.window and args.window > 0:               # FIFO 큐: 직전 N개만 (on-device)
-            primary = SA.analyze_windowed(frames, ok_uids, window=args.window,
-                                          conf_thr=args.min_conf, by_size=args.cluster_by_size)
+        if args.window and args.window > 0:               # on-device: 워밍업-락(안정) + O(1) 읽기
+            primary = SA.analyze_streaming(frames, ok_uids, warmup=args.window,
+                                           conf_thr=args.min_conf, by_size=args.cluster_by_size,
+                                           relock_every=args.relock_every)
             duals, allm = [], []
         else:                                             # 전체 배치 (오프라인)
             primary, duals, allm = SA.analyze(frames, ok_uids, conf_thr=args.min_conf, by_size=args.cluster_by_size)

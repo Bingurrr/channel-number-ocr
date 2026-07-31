@@ -172,6 +172,76 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
     return out
 
 
+def analyze_streaming(frames, ids, warmup=15, pos_thr=0.04, conf_thr=0.3, by_size=False,
+                      size_lo=0.55, size_hi=1.8, band_thr=0.04, relock_every=0):
+    """[on-device] 워밍업-락: 처음 warmup개로 채널 영역을 '한 번' 확정 → 이후 각 프레임은 그
+    고정 영역에서 O(1)로 읽기만. 무상태 재클러스터링(윈도우마다 흔들림)의 불안정을 없앤다.
+
+    영역 자체는 O(1) 통계(좌표/높이)로 유지 → TV CPU 메모리 문제없음(원시 프레임은 안 쌓음).
+    relock_every>0 이면 그만큼 프레임마다 최근 warmup개로 영역을 다시 확정(느린 적응).
+    반환: primary-유사 dict 또는 None.
+    """
+    W0 = float(frames[0].get("image_width") or 1280) or 1280
+    H0 = float(frames[0].get("image_height") or 720) or 720
+
+    def lock_region(lo, hi):
+        pr, du, _ = analyze(frames[lo:hi], ids[lo:hi], pos_thr, conf_thr, by_size)
+        if not pr:
+            return None
+        b = pr["box"]
+        return {"cx": (b[0] + b[2]) / 2 / W0, "cy": (b[1] + b[3]) / 2 / H0,
+                "mh": (b[3] - b[1]) / H0, "box": b,
+                "pf": dict(pr["per_frame"]), "pfc": dict(pr.get("per_frame_conf", {}))}
+
+    reg = lock_region(0, min(warmup, len(frames)))
+    if reg is None:                                          # 워밍업 실패 → 전체로 한 번
+        reg = lock_region(0, len(frames))
+    if reg is None:
+        return None
+
+    per_frame, per_conf, boxes = {}, {}, []
+    for fi, im in enumerate(frames):
+        uid = ids[fi]
+        if relock_every and fi > 0 and fi % relock_every == 0:   # 느린 재확정(적응)
+            r2 = lock_region(max(0, fi - warmup + 1), fi + 1)
+            if r2:
+                reg = r2
+        # 워밍업 창이 이미 채운 값 우선
+        if uid in reg["pf"]:
+            per_frame[uid] = reg["pf"][uid]; per_conf[uid] = reg["pfc"].get(uid, 0.5); boxes.append(reg["box"]); continue
+        # 고정 영역 근처 최고conf 채널숫자 읽기 (O(1))
+        W = float(im.get("image_width") or 1280) or 1280
+        H = float(im.get("image_height") or 720) or 720
+        best = None
+        for c in im.get("candidates", []):
+            b = c.get("bbox_xyxy"); t = c.get("text", "")
+            if not b or len(b) != 4 or classify(t) != "channelnum":
+                continue
+            v = _cnorm(best_digit(t)); cf = float(c.get("ocr_conf", 0.5) or 0.5)
+            if not v or cf < conf_thr:
+                continue
+            cx, cy = (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H
+            hgt = (b[3] - b[1]) / H
+            if by_size:
+                if reg["mh"] > 0 and not (size_lo <= hgt / reg["mh"] <= size_hi):
+                    continue
+                if min(abs(cy - reg["cy"]), abs(cx - reg["cx"])) > band_thr:   # 같은 행/열(평행이동)
+                    continue
+            else:
+                if ((cx - reg["cx"]) ** 2 + (cy - reg["cy"]) ** 2) ** 0.5 > pos_thr:
+                    continue
+            if best is None or cf > best[0]:
+                best = (cf, v)
+        if best:
+            per_frame[uid] = best[1]; per_conf[uid] = best[0]; boxes.append(reg["box"])
+    if not boxes:
+        return None
+    box = [st.median([b[k] for b in boxes]) for k in range(4)]
+    return {"box": box, "per_frame": per_frame, "per_frame_conf": per_conf,
+            "score": round(len(per_frame) / max(1, len(ids)), 3),
+            "distinct": len({_cnorm(v) for v in per_frame.values()}), "duals": []}
+
+
 def analyze_windowed(frames, ids, window=5, pos_thr=0.04, conf_thr=0.3, by_size=False):
     """각 프레임을 '직전 window개' 슬라이딩 윈도우로만 클러스터링해 그 프레임의 채널값을 정한다.
 
