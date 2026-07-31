@@ -172,6 +172,34 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
     return out
 
 
+def analyze_windowed(frames, ids, window=5, pos_thr=0.04, conf_thr=0.3, by_size=False):
+    """각 프레임을 '직전 window개' 슬라이딩 윈도우로만 클러스터링해 그 프레임의 채널값을 정한다.
+
+    on-device 실시간(최근 N프레임만 유지) 시뮬레이션. 폴더 전체(1000+)를 한 번에 묶지 않고,
+    프레임 i는 [i-window+1 .. i] 만 보고 판단 → 실제 배포 환경과 동일. primary-유사 dict 반환.
+    """
+    per_frame, confs, boxes = {}, {}, []
+    for i, uid in enumerate(ids):
+        lo = max(0, i - window + 1)
+        wf, wu = frames[lo:i + 1], ids[lo:i + 1]
+        primary, duals, _ = analyze(wf, wu, pos_thr=pos_thr, conf_thr=conf_thr, by_size=by_size)
+        if not primary:
+            continue
+        v = primary["per_frame"].get(uid); c = primary.get("per_frame_conf", {}).get(uid, 0.5)
+        if v is None:                                        # 윈도우 primary가 이 프레임을 못 채우면 듀얼로
+            for d in duals:
+                if uid in d["per_frame"]:
+                    v = d["per_frame"][uid]; c = d.get("per_frame_conf", {}).get(uid, 0.5); break
+        if v is not None:
+            per_frame[uid] = v; confs[uid] = c; boxes.append(primary["box"])
+    if not boxes:
+        return None
+    box = [st.median([b[k] for b in boxes]) for k in range(4)]
+    return {"box": box, "per_frame": per_frame, "per_frame_conf": confs,
+            "score": round(len(per_frame) / max(1, len(ids)), 3),
+            "distinct": len({_cnorm(v) for v in per_frame.values()}), "duals": []}
+
+
 def read_at_field_box(frames, ids, field_box, conf_thr=0.3, near=0.08):
     """field box(v1이 찾은 채널 위치) 근처 '최고 conf 채널숫자'를 읽는다.
 

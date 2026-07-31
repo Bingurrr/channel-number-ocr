@@ -89,6 +89,9 @@ def main():
     ap.add_argument("--cluster-by-size", action="store_true",
                     help="[v3] 채널박스가 채널마다 다른 위치에 뜨는 UI: 위치 대신 '글자 높이(폰트 "
                          "크기)'로 클러스터링/선택. 위치 이동에 강함(값다양성+채널숫자+높이일관성으로 선택)")
+    ap.add_argument("--window", type=int, default=0, metavar="N",
+                    help="[on-device] FIFO 큐: 각 프레임을 '직전 N개'로만 클러스터링(전체 아님). "
+                         "TV CPU 실시간 배포와 동일. 0=전체(오프라인). 실시간은 5 권장")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -140,7 +143,12 @@ def main():
         frames = [by_id[u] for u in ok_uids]
         if not frames:
             continue
-        primary, duals, allm = SA.analyze(frames, ok_uids, conf_thr=args.min_conf, by_size=args.cluster_by_size)
+        if args.window and args.window > 0:               # FIFO 큐: 직전 N개만 (on-device)
+            primary = SA.analyze_windowed(frames, ok_uids, window=args.window,
+                                          conf_thr=args.min_conf, by_size=args.cluster_by_size)
+            duals, allm = [], []
+        else:                                             # 전체 배치 (오프라인)
+            primary, duals, allm = SA.analyze(frames, ok_uids, conf_thr=args.min_conf, by_size=args.cluster_by_size)
         if primary:
             p_pf = primary["per_frame"]; p_conf = primary.get("per_frame_conf", {})
             # 듀얼(2번째 채널박스) 값/신뢰도 병합 (여러 듀얼이면 프레임별 최고 conf)
