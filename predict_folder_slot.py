@@ -63,6 +63,14 @@ def main():
                          "근처 후보 없는 프레임은 기존 슬롯/force-answer로 커버")
     ap.add_argument("--field-near", type=float, default=0.08,
                     help="field-priority: field box 중심에서 이 정규화 반경 내 후보만 채널로 인정")
+    ap.add_argument("--second-channel", action="store_true",
+                    help="[v3] 사용자 방법론: primary값과 같은 숫자가 뜨는 '2번째 위치'를 "
+                         "프레임 누적 투표로 학습 → primary가 none이거나 conf 낮은 프레임을 "
+                         "2번째 위치 읽기로 보완/교정")
+    ap.add_argument("--second-min-votes", type=int, default=5,
+                    help="second-channel: 2번째영역으로 확정하는 최소 누적 일치 투표수")
+    ap.add_argument("--second-conf-gate", type=float, default=0.6,
+                    help="second-channel: primary conf가 이 값 미만이고 2번째가 더 높으면 교정")
     args = ap.parse_args()
 
     cfg = P.load_config()
@@ -149,9 +157,12 @@ def main():
                          "duals": [d["box"] for d in duals], "both": True}
             else:
                 merged = dict(p_pf)
+                mconf = dict(p_conf)
                 for uid, v in d_pf.items():                     # 기존: primary 빈칸만 채움
                     merged.setdefault(uid, v)
+                    mconf.setdefault(uid, d_conf.get(uid, 0.5))
                 field = {"median_box": primary["box"], "per_frame": merged,
+                         "per_frame_conf": mconf,
                          "score": primary["score"], "distinct": primary["distinct"],
                          "duals": [d["box"] for d in duals], "both": False}
             recover_field_values(frames, ok_uids, field)
@@ -184,6 +195,37 @@ def main():
                     overridden += 1
                 field["per_frame"][uid] = v
         print(f"[field-priority/v3] field box 우선 적용: 덮어씀 {overridden}, 신규 {added} 프레임", flush=True)
+
+    # === [v3] 2번째 채널영역 (사용자 방법론): 학습 → 보완/교정 ===
+    if args.second_channel:
+        t_fill = t_ovr = 0
+        for g, (entry, field) in per_folder.items():
+            if not field:
+                continue
+            ok_uids = [u for u in sorted(seqs.get(g, [])) if u in by_id]
+            frames = [by_id[u] for u in ok_uids]
+            # primary값 = 지금까지 확정된 per_frame (v1 슬롯 + 듀얼 + force)
+            primary_of = dict(field["per_frame"])
+            region = SA.learn_second_region(frames, ok_uids, primary_of, field["median_box"],
+                                            min_votes=args.second_min_votes)
+            if not region:
+                entry["second_region"] = None
+                continue
+            pconf = field.get("per_frame_conf", {})
+            fill = ovr = 0
+            for fi, im in enumerate(frames):
+                uid = ok_uids[fi]
+                sv, sc = SA.read_at_region(im, region)
+                if not sv:
+                    continue
+                if uid not in field["per_frame"]:
+                    field["per_frame"][uid] = sv; fill += 1               # none 보완
+                elif pconf.get(uid, 1.0) < args.second_conf_gate and sc > pconf.get(uid, 1.0):
+                    field["per_frame"][uid] = sv; ovr += 1                # 저conf 교정
+            entry["second_region"] = [round(region[0], 3), round(region[1], 3), region[2]]
+            t_fill += fill; t_ovr += ovr
+            print(f"[second-channel/v3] {g}: 2번째영역 votes={region[2]}  보완 {fill}  교정 {ovr}", flush=True)
+        print(f"[second-channel/v3] 합계: 보완 {t_fill}  교정 {t_ovr} 프레임", flush=True)
 
     # === (선택) ROI crop full-OCR 재읽기 ===
     if args.force_read:

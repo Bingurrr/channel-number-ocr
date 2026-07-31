@@ -181,6 +181,69 @@ def read_at_field_box(frames, ids, field_box, conf_thr=0.3, near=0.08):
     return out
 
 
+def _numcands_norm(im):
+    """모든 후보에서 숫자만 남긴 정규화 후보: (value, cx, cy, conf). 'YTN' 등 글자 제거."""
+    import re
+    W = float(im.get("image_width") or 1280) or 1280
+    H = float(im.get("image_height") or 720) or 720
+    out = []
+    for c in im.get("candidates", []):
+        b = c.get("bbox_xyxy"); t = c.get("text", "")
+        if not b or len(b) != 4:
+            continue
+        d = re.sub(r"\D", "", str(t))
+        if not d or len(d) > 5:
+            continue
+        out.append((d, (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H, float(c.get("ocr_conf", 0.5) or 0.5)))
+    return out
+
+
+def learn_second_region(frames, ids, primary_of, field_box, min_sep=0.10, min_votes=5):
+    """[v3/사용자 아이디어] primary가 확신한 프레임들에서 'primary값과 같은 숫자가 뜨는
+    다른 위치'를 프레임마다 누적 투표 → 확정된 2번째 채널 표시 위치를 학습.
+
+    진짜 2번째 채널영역은 매 프레임 primary와 같이 값이 바뀜 → 일치 투표 많음.
+    프로그램 숫자는 우연히만 일치 → 투표 적음 → min_votes로 걸러짐.
+    반환: (region_cx, region_cy, votes) 정규화좌표, 또는 None.
+    """
+    W0 = float(frames[0].get("image_width") or 1280) or 1280
+    H0 = float(frames[0].get("image_height") or 720) or 720
+    fcx = (field_box[0] + field_box[2]) / 2 / W0
+    fcy = (field_box[1] + field_box[3]) / 2 / H0
+    clusters = []                                        # [cx, cy, npts, votes]
+    for fi, im in enumerate(frames):
+        pv = primary_of.get(ids[fi])
+        if not pv:
+            continue
+        pvn = _cnorm(pv)
+        for v, cx, cy, cf in _numcands_norm(im):
+            if _cnorm(v) != pvn:
+                continue
+            if ((cx - fcx) ** 2 + (cy - fcy) ** 2) ** 0.5 <= min_sep:
+                continue                                 # primary 위치 자신은 제외
+            r = next((r for r in clusters if (cx - r[0]) ** 2 + (cy - r[1]) ** 2 < min_sep ** 2), None)
+            if r:
+                n = r[2]; r[0] = (r[0] * n + cx) / (n + 1); r[1] = (r[1] * n + cy) / (n + 1); r[2] = n + 1; r[3] += 1
+            else:
+                clusters.append([cx, cy, 1, 1])
+    if not clusters:
+        return None
+    best = max(clusters, key=lambda r: r[3])
+    return (best[0], best[1], best[3]) if best[3] >= min_votes else None
+
+
+def read_at_region(im, region, near=0.08):
+    """한 프레임에서 region(정규화 cx,cy) 근처 최고conf 숫자후보 → (value, conf)."""
+    if region is None:
+        return (None, 0.0)
+    pool = [(v, cf) for v, cx, cy, cf in _numcands_norm(im)
+            if ((cx - region[0]) ** 2 + (cy - region[1]) ** 2) ** 0.5 <= near]
+    if not pool:
+        return (None, 0.0)
+    pool.sort(key=lambda x: -x[1])
+    return pool[0]
+
+
 def resolve_by_agreement(frames, ids, conf_thr=0.3, min_sep=0.08):
     """데이터 기반 채널 선택 (선택 문제 82% 해결용).
 
