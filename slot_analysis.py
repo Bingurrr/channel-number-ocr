@@ -94,9 +94,8 @@ def _metrics(s, n, W0, H0):
         score *= 0.15
     if area > 0.06:
         score *= 0.15
-    # 위치 안정성: 약한 신호로만. (읽히는 곳 우선 — 고정이라도 못 읽으면 소용없음)
-    if pos_std > 0.12:
-        score *= 0.7            # 아주 많이 움직일 때만 약한 페널티(순수 배경노이즈 방지)
+    if pos_std > 0.03:
+        score *= 0.5           # 원본: 위치 흔들리면 감점 (85% 기준)
     if h_cv > 0.35:
         score *= 0.6
     # 프레임별 채널값 + 신뢰도(같은 프레임에 여러 후보면 최고 conf 채택)
@@ -106,9 +105,8 @@ def _metrics(s, n, W0, H0):
             c = m.get("conf", 0.5)
             if m["uid"] not in pfc or c > pfc[m["uid"]]:
                 pf[m["uid"]] = _cnorm(m["value"]); pfc[m["uid"]] = c
-    # 읽기 신뢰도 반영: 깨끗하게 읽히는 슬롯 선호 → 방송사 로고 위(저conf) 억제
+    # (avg_conf는 참고용으로만 노출 — 점수엔 곱하지 않음. 85% 원본 유지)
     avg_conf = (sum(pfc.values()) / len(pfc)) if pfc else 0.5
-    score *= (0.4 + 0.6 * avg_conf)
     return {"box": [round(v, 1) for v in box], "score": round(score, 3),
             "avg_conf": round(avg_conf, 3), "distinct": distinct,
             "present": present, "n": n, "aspect": round(aspect, 2), "area": round(area, 4),
