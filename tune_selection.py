@@ -135,8 +135,12 @@ def main():
     print(f"프레임 {len(rows)}  값다양성영역={region and (round(region[0],2),round(region[1],2))}  "
           f"v1_field={fbox and (round(fbox[0],2),round(fbox[1],2))}", flush=True)
 
+    def curval(fr):
+        s = "".join(ch for ch in str(cur.get(fr, "")) if ch.isdigit())
+        return _cn(s) if s else ""
+
     strategies = {
-        "current": lambda fr, g, c: _cn("".join(ch for ch in str(cur.get(fr, "")) if ch.isdigit())) if cur.get(fr) else "",
+        "current": lambda fr, g, c: curval(fr),
         "top_conf": lambda fr, g, c: (max(c, key=lambda x: x[3])[0] if c else ""),
         "shortest": lambda fr, g, c: (sorted(c, key=lambda x: (x[4], -x[3]))[0][0] if c else ""),
         "region_lock": lambda fr, g, c: near_region(c, region) or "",
@@ -149,6 +153,10 @@ def main():
         "field_short_wide": lambda fr, g, c: near_region(c, fbox, short=True, near=0.14) or "",
         "agree_or_field": lambda fr, g, c: within_agree(c) or near_region(c, fbox, short=True, near=0.12) or "",
         "field_or_top": lambda fr, g, c: near_region(c, fbox, short=True, near=0.10) or (max(c, key=lambda x: x[3])[0] if c else ""),
+        # ★ 결합: 정확한 field_lock 우선 + 없으면 current(커버리지)
+        "field_or_current": lambda fr, g, c: near_region(c, fbox, near=0.08) or curval(fr),
+        "field10_or_current": lambda fr, g, c: near_region(c, fbox, near=0.10) or curval(fr),
+        "field_or_agree_or_current": lambda fr, g, c: near_region(c, fbox, near=0.08) or within_agree(c) or curval(fr),
     }
     print(f"\n{'strategy':<20}{'정확도%':>9}{'맞음/전체':>14}  (읽은것중)")
     for name, fn in strategies.items():
