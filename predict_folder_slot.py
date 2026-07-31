@@ -282,12 +282,36 @@ def main():
             font, bgcol = PD.learn_font_color_otsu(tight) if tight else (None, None)
             entry["font_color"] = None if font is None else [int(v) for v in font]
             entry["bg_color"] = None if bgcol is None else [int(v) for v in bgcol]
-            # 2) 각 프레임 채널박스 색분리 → 재읽기 → viz
+            # 1.5) 박스 이동 대응: 프레임별 실제 채널 위치 추적 + 이동범위(envelope) 계산
+            mcx, mcy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
+            rad = max(fx2 - fx1, fy2 - fy1) * 2.0                # 이동 허용 반경
+            per_box, env = {}, [fx1, fy1, fx2, fy2]
+            for uid in ok_uids:
+                best = None
+                for c in by_id[uid].get("candidates", []):
+                    b = c.get("bbox_xyxy"); t = c.get("text", "")
+                    if not b or len(b) != 4 or not re.sub(r"\D", "", str(t)):
+                        continue
+                    cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+                    if ((cx - mcx) ** 2 + (cy - mcy) ** 2) ** 0.5 > rad:
+                        continue
+                    cf = float(c.get("ocr_conf", 0) or 0)
+                    if best is None or cf > best[0]:
+                        best = (cf, b)
+                if best:
+                    per_box[uid] = best[1]
+                    env = [min(env[0], best[1][0]), min(env[1], best[1][1]),
+                           max(env[2], best[1][2]), max(env[3], best[1][3])]
+            epx, epy = (env[2] - env[0]) * 0.15, (env[3] - env[1]) * 0.30
+            env = [env[0] - epx, env[1] - epy, env[2] + epx, env[3] + epy]   # 이동범위 + 여백
+            # 2) 각 프레임 색분리 → 재읽기 → viz. 검출프레임=실제위치, none=이동범위 전체
             n = 0
             for uid in ok_uids:
                 im = by_id[uid]
+                box = per_box.get(uid, env)                     # 이동 대응
                 try:
-                    crop = _Img.open(im["image_path"]).convert("RGB").crop((int(fx1), int(fy1), int(fx2), int(fy2)))
+                    crop = _Img.open(im["image_path"]).convert("RGB").crop(
+                        (int(box[0]), int(box[1]), int(box[2]), int(box[3])))
                 except Exception:
                     continue
                 clean, mask = PD.isolate_contrast(crop, font, bg=bgcol, margin=args.font_isolate_margin)
