@@ -153,6 +153,73 @@ def within_frame_dupes(frames, ids, conf_thr=0.3, min_sep=0.05):
     return out
 
 
+def resolve_by_agreement(frames, ids, conf_thr=0.3, min_sep=0.08):
+    """데이터 기반 채널 선택 (선택 문제 82% 해결용).
+
+    핵심: '같은 숫자가 한 프레임에 2곳(멀리)에 나오면 채널' (우상단+좌하단 동시).
+      프로그램 코드는 1곳만 → 배제. 채널은 2곳 일치 → 확정.
+    1) 프레임내 2곳 일치값 = 그 프레임 채널 (강함). 일치가 일어난 '위치'들을 모음.
+    2) 모인 위치 = 확정된 채널 영역(우상단/좌하단 2군데).
+    3) 일치 없는 프레임(한쪽만 읽힘) = 확정 영역 근처 최고conf 후보 채택.
+       (움직이는 좌하단도 확정 영역에 속하면 잡힘, 프로그램코드는 영역 밖이라 배제)
+
+    반환: {uid: value}
+    """
+    fcands, agree_pf, region_pts = [], {}, []
+    for fi, im in enumerate(frames):
+        W = float(im.get("image_width") or 1280) or 1280
+        H = float(im.get("image_height") or 720) or 720
+        cands = []
+        for c in im.get("candidates", []):
+            b = c.get("bbox_xyxy"); t = c.get("text", "")
+            if not b or len(b) != 4 or classify(t) != "channelnum":
+                continue
+            v = _cnorm(best_digit(t)); cf = float(c.get("ocr_conf", 0.5) or 0.5)
+            if not v or cf < conf_thr:
+                continue
+            cands.append((v, (b[0] + b[2]) / 2 / W, (b[1] + b[3]) / 2 / H, cf))
+        fcands.append(cands)
+        byval = {}
+        for v, cx, cy, cf in cands:
+            byval.setdefault(v, []).append((cx, cy, cf))
+        best = None
+        for v, pts in byval.items():
+            distinct = []
+            for p in pts:
+                if all((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 >= min_sep ** 2 for q in distinct):
+                    distinct.append(p)
+            if len(distinct) >= 2:                       # 2곳 일치 = 채널
+                sc = sum(p[2] for p in distinct)
+                if best is None or sc > best[0]:
+                    best = (sc, v, distinct)
+        if best:
+            agree_pf[ids[fi]] = best[1]
+            region_pts.extend((p[0], p[1]) for p in best[2])
+    # 일치 위치 군집 = 확정된 채널 영역들
+    regions = []
+    for p in region_pts:
+        r = next((r for r in regions if (p[0] - r[0]) ** 2 + (p[1] - r[1]) ** 2 < min_sep ** 2), None)
+        if r:
+            r[2].append(p); r[0] = sum(x[0] for x in r[2]) / len(r[2]); r[1] = sum(x[1] for x in r[2]) / len(r[2])
+        else:
+            regions.append([p[0], p[1], [p]])
+    cregions = [(r[0], r[1]) for r in regions]
+    out = {}
+    for fi in range(len(frames)):
+        uid = ids[fi]
+        if uid in agree_pf:                              # 1) 프레임내 일치
+            out[uid] = agree_pf[uid]
+        elif cregions:                                   # 2) 확정 영역 근처 최고conf
+            best = None
+            for v, cx, cy, cf in fcands[fi]:
+                d = min(((cx - rx) ** 2 + (cy - ry) ** 2) ** 0.5 for rx, ry in cregions)
+                if d <= min_sep and (best is None or cf > best[0]):
+                    best = (cf, v)
+            if best:
+                out[uid] = best[1]
+    return out, cregions
+
+
 def confirmed_second_regions(frames, ids, ref_pf, ref_box, conf_thr=0.3,
                              min_agree=2, sep=0.06):
     """'2번째 채널 위치' 확정 (사용자 아이디어): 기준값(ref_pf, 보통 우측상단 값)과

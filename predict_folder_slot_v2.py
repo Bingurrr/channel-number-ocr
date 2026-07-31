@@ -120,43 +120,19 @@ def main():
                     if uid not in d_conf or c > d_conf[uid]:
                         d_pf[uid] = v; d_conf[uid] = c
             if args.both_channel:
-                # === v2: '읽히는 곳 우선' 프레임별 신뢰도 해결 ===
-                # 우측상단(고정,못읽음) 대신 좌측하단(이동,잘읽힘)을 프레임마다 conf로 선택.
-                W0 = float(frames[0].get("image_width") or 1280) or 1280
-                H0 = float(frames[0].get("image_height") or 720) or 720
-                pbx = primary["box"]
-                chan_boxes = [((pbx[0] + pbx[2]) / 2 / W0, (pbx[1] + pbx[3]) / 2 / H0)]
-                for d in duals:
-                    db = d["box"]; chan_boxes.append(((db[0] + db[2]) / 2 / W0, (db[1] + db[3]) / 2 / H0))
-                # 채널값 집합을 넓게: 값이 바뀌는 모든 슬롯(=좌측하단 이동박스 포함)
-                chan_values = set(p_pf.values()) | set(d_pf.values())
-                for m in allm:
-                    if m.get("distinct", 0) >= 2:
-                        chan_values |= set(m.get("per_frame", {}).values())
-                res = SA.resolve_channel_per_frame(frames, ok_uids, chan_boxes, chan_values,
-                                                   conf_thr=args.min_conf)
-                final = {uid: v for uid, (v, cf, ag) in res.items() if v}
-                # 해결 못한 프레임은 primary/dual로 폴백
+                # === v2: 프레임내 '2곳 일치=채널' 우선 (데이터기반, 선택문제 82% 해결) ===
+                final, cregions = SA.resolve_by_agreement(frames, ok_uids, conf_thr=args.min_conf)
+                # 일치로 못 정한 프레임은 기존 primary/dual 값으로 보완
                 for uid in set(p_pf) | set(d_pf):
-                    if uid not in final:
+                    if not final.get(uid):
                         v1, v2 = p_pf.get(uid), d_pf.get(uid)
                         if v1 and v2:
                             final[uid] = v1 if p_conf.get(uid, 0) >= d_conf.get(uid, 0) else v2
-                        elif v1 or v2:
+                        else:
                             final[uid] = v1 or v2
-                # 2번째 채널 위치 확정: 우측상단(primary) 값과 반복 일치한 위치(=좌측하단)
-                conf_regions = SA.confirmed_second_regions(frames, ok_uids, p_pf, primary["box"],
-                                                           conf_thr=args.min_conf)
-                fb_boxes = chan_boxes + conf_regions               # 확정 위치를 폴백 우선영역에 추가
-                # 그래도 none이면: 확정된 채널영역 근처 '최고 conf 후보'를 뱉기 (사용자 아이디어)
-                topc = SA.top_channel_candidate(frames, ok_uids, conf_thr=args.min_conf,
-                                                chan_boxes=fb_boxes)
-                for uid in ok_uids:
-                    if not final.get(uid) and topc.get(uid):
-                        final[uid] = topc[uid]
                 field = {"median_box": primary["box"], "per_frame": {k: v for k, v in final.items() if v},
                          "per_frame_1": dict(p_pf), "per_frame_2": dict(d_pf),
-                         "agree_frames": sum(1 for _u, (_v, _c, a) in res.items() if a),
+                         "agree_regions": [[round(x, 3), round(y, 3)] for x, y in cregions],
                          "box2": duals[0]["box"] if duals else None,
                          "score": primary["score"], "distinct": primary["distinct"],
                          "duals": [d["box"] for d in duals], "both": True}
