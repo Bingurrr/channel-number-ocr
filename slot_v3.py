@@ -40,7 +40,11 @@ def is_time_or_date(t):
 
 
 def split_candidate(c):
-    """(A) 숫자+텍스트 혼합 박스를 숫자부만 잘라낸다. 시간/날짜면 버림. 반환 sub-candidate 리스트."""
+    """(A) 숫자+텍스트 혼합 박스를 숫자부만 잘라낸다. 시간/날짜면 버림. 반환 sub-candidate 리스트.
+
+    en rec는 한글을 '영어/숫자 쓰레기'로 뱉으므로 한글 판별은 불가. 대신 '숫자 순도(purity)'
+    = 숫자가 박스 영숫자 중 몇 %인가로 판별한다(채널=거의 숫자, 한글오독=긴 영문 속 숫자조각).
+    """
     b = c.get("bbox_xyxy"); t = str(c.get("text", ""))
     if not b or len(b) != 4 or is_time_or_date(t):
         return []
@@ -49,13 +53,14 @@ def split_candidate(c):
         return []
     L = max(1, len(t))
     non_digit = re.sub(r"[\d\s]", "", t)               # 숫자·공백 제외 = 텍스트부 존재?
-    had_prefix = bool(PREFIX_RE.search(t))             # CH/Channel 접두사
-    had_hangul = bool(HANGUL.search(t))
+    alnum = re.sub(r"[^0-9A-Za-z]", "", t)             # 영숫자만 (순도 계산용)
+    had_prefix = bool(PREFIX_RE.search(t))             # CH/Channel 접두사 (정당한 접두사)
     x1, y1, x2, y2 = b; W = x2 - x1
     out = []
     for d, s, e in runs:
         if not (1 <= len(d) <= 5):
             continue
+        purity = 1.0 if had_prefix else len(d) / max(1, len(alnum))   # 숫자 순도
         if non_digit and not had_prefix:               # 혼합("000 MBC") → 문자비율로 숫자부만
             dx1 = x1 + W * (s / L); dx2 = x1 + W * (e / L)
         else:                                          # 순수숫자 / "CH123" → 원본 폭
@@ -63,7 +68,7 @@ def split_candidate(c):
         out.append({"bbox_xyxy": [dx1, y1, dx2, y2], "text": d,
                     "ocr_conf": float(c.get("ocr_conf", 0.5) or 0.5),
                     "had_text": bool(non_digit) and not had_prefix,
-                    "had_prefix": had_prefix, "had_hangul": had_hangul})
+                    "had_prefix": had_prefix, "purity": purity})
     return out
 
 
@@ -80,7 +85,7 @@ def preprocess_frame(im, conf_thr=0.3):
             out.append({"cx": (b[0] + b[2]) / 2 / W, "cy": (b[1] + b[3]) / 2 / H,
                         "h": (b[3] - b[1]) / H, "value": _cnorm(sc["text"]), "raw": sc["text"],
                         "conf": sc["ocr_conf"], "had_text": sc["had_text"],
-                        "had_prefix": sc["had_prefix"], "had_hangul": sc["had_hangul"],
+                        "had_prefix": sc["had_prefix"], "purity": sc["purity"],
                         "box": [round(x, 1) for x in b]})
     return out
 
@@ -101,93 +106,107 @@ def within_frame_agreed(cands, min_sep=0.06):
     return agreed
 
 
-def _cluster(win, by_height, band, size_lo, size_hi):
-    """윈도우(프레임별 후보 리스트)를 높이+정렬로 묶는다. by_height면 위치 대신 높이+평행이동축."""
-    slots = []
-    for li, cands in enumerate(win):
-        for c in cands:
-            best, bd = None, 1e9
-            for s in slots:
-                r = c["h"] / s["mh"] if s["mh"] > 0 else 1.0
-                if not (size_lo <= r <= size_hi):        # 높이 게이트 (항상)
-                    continue
-                if by_height:
-                    dd = min(abs(c["cy"] - s["cy"]), abs(c["cx"] - s["cx"]))  # 같은 행/열(평행이동)
-                else:
-                    dd = ((c["cx"] - s["cx"]) ** 2 + (c["cy"] - s["cy"]) ** 2) ** 0.5
-                if dd > band:
-                    continue
-                m = abs(r - 1.0) + dd
-                if m < bd:
-                    bd, best = m, s
-            if best is None:
-                best = {"cx": c["cx"], "cy": c["cy"], "mh": c["h"], "items": [], "frames": set()}
-                slots.append(best)
-            best["items"].append((li, c)); best["frames"].add(li)
-            k = len(best["items"])
-            best["cx"] = (best["cx"] * (k - 1) + c["cx"]) / k
-            best["cy"] = (best["cy"] * (k - 1) + c["cy"]) / k
-            best["mh"] = st.median([it[1]["h"] for it in best["items"]])
-    return slots
+def _assign(slots, c, by_height, band, size_lo, size_hi):
+    """후보 c를 슬롯에 배정(높이 게이트 + 위치/평행이동축). 위치는 '최근' 기준이라 서서히 드리프트
+    따라감. 없으면 새 슬롯 생성."""
+    best, bd = None, 1e9
+    for s in slots:
+        r = c["h"] / s["mh"] if s["mh"] > 0 else 1.0
+        if not (size_lo <= r <= size_hi):                       # 높이 게이트 (묶는 키)
+            continue
+        if by_height:
+            dd = min(abs(c["cy"] - s["cy"]), abs(c["cx"] - s["cx"]))   # 같은 행/열(평행이동)
+        else:
+            dd = ((c["cx"] - s["cx"]) ** 2 + (c["cy"] - s["cy"]) ** 2) ** 0.5
+        if dd > band:
+            continue
+        m = abs(r - 1.0) + dd
+        if m < bd:
+            bd, best = m, s
+    if best is None:
+        best = {"cx": c["cx"], "cy": c["cy"], "mh": c["h"], "last": -1, "recent": []}
+        slots.append(best)
+    return best
 
 
-def _score(s, nwin, agreed_by_li):
-    """(B) 강한 선택 점수. 높이일관성×값다양성×깨끗한숫자×(시간/날짜아님)×2곳일치보너스."""
-    items = [c for _, c in s["items"]]
-    present = len(s["frames"])
-    distinct = len({c["value"] for c in items})
-    base = (1.0 + 0.2 * distinct) if distinct >= 2 else 0.1      # 값 다양성 자격
-    clean = sum(1.0 if not c["had_text"] else 0.5 for c in items) / len(items)
-    hangul = sum(0.25 if c["had_hangul"] else 1.0 for c in items) / len(items)  # 한글오독 감점
-    prefix = 1.0 + 0.3 * (sum(c["had_prefix"] for c in items) / len(items))     # CH/Channel 가점
-    hs = [c["h"] for c in items]
+def _update(s, c, i, agreed, mem):
+    """슬롯의 '최근 mem프레임' 관측만 유지(오래된 건 버림) → 위치 변화에 적응 + 신호 유지."""
+    aspect = (c["box"][2] - c["box"][0]) / max(1e-6, (c["box"][3] - c["box"][1]))
+    s["recent"].append((i, c["value"], c["purity"], c["h"], c["cx"], c["cy"], aspect,
+                        1 if c["value"] in agreed else 0))
+    lo = i - mem + 1
+    while s["recent"] and s["recent"][0][0] < lo:               # mem프레임보다 오래된 관측 폐기
+        s["recent"].pop(0)
+    r = s["recent"]; s["last"] = i
+    s["cx"] = sum(e[4] for e in r) / len(r)                     # 위치=최근 평균(드리프트 추적)
+    s["cy"] = sum(e[5] for e in r) / len(r)
+    s["mh"] = st.median([e[3] for e in r])
+
+
+def _score_persistent(s, i, mem):
+    """(B) '최근 mem프레임' 통계로 선택 점수. 전체 history 아님 → 위치 바뀌면 옛 슬롯 점수 급락."""
+    r = s["recent"]
+    if not r:
+        return 0.0
+    span = min(mem, i + 1)
+    present = len({e[0] for e in r})                            # 최근 등장 프레임 수
+    distinct = len({e[1] for e in r})
+    base = (1.0 + 0.2 * distinct) if distinct >= 2 else 0.1     # 값 다양성 자격
+    purity = sum(e[2] for e in r) / len(r)                      # 순수 숫자일수록 ↑(한글오독 ↓)
+    hs = [e[3] for e in r]
     h_cv = (st.pstdev(hs) / (sum(hs) / len(hs))) if len(hs) > 1 and sum(hs) > 0 else 0.0
-    score = (present / max(1, nwin)) * base * clean * hangul * prefix
+    cov = present / max(1, span)                                # 최근 커버리지(끊기면 급락→적응)
+    score = cov * base * purity
     if h_cv > 0.30:
         score *= 0.4                                            # 높이 일관성 필수
-    # 종횡비/면적 게이트
-    ws = [c["box"][2] - c["box"][0] for c in items]; hpx = [c["box"][3] - c["box"][1] for c in items]
-    aspect = (sum(ws) / len(ws)) / max(1.0, sum(hpx) / len(hpx))
+    aspect = sum(e[6] for e in r) / len(r)
     if not (0.2 <= aspect <= 8.0):
         score *= 0.2
-    # 2곳 일치 보너스 (강력): 프레임 내 같은 값이 두 곳
-    twol = sum(1 for li, c in s["items"] if c["value"] in agreed_by_li.get(li, ()))
-    if twol > 0:
-        score *= (1.0 + 0.6 * twol)
-    return score, present, distinct
+    twoloc = sum(e[7] for e in r)
+    if twoloc > 0:                                             # 2곳 일치 = 채널 강한 신호
+        score *= (1.0 + 0.6 * min(twoloc, 6))
+    return score
 
 
-def rolling_analyze(frames, ids, window=5, by_height=False, band=0.05,
-                    size_lo=0.6, size_hi=1.7, min_present=2, conf_thr=0.3, hysteresis=0.25):
-    """(C) 롤링 FIFO. 각 프레임을 직전 window개 누적으로 판단 → 채널값. primary-유사 dict 반환."""
-    pre = [preprocess_frame(im, conf_thr) for im in frames]
-    agreed = [within_frame_agreed(cands) for cands in pre]
+def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
+                    size_lo=0.6, size_hi=1.7, min_present=2, conf_thr=0.3,
+                    hysteresis=0.2):
+    """(C) on-device: 슬롯별 '최근 window프레임 통계'만 유지(이미지 저장 X, O(#슬롯×window)).
+    선택은 그 최근 통계로(5개보다 강함) + 위치가 갑자기 바뀌면 옛 슬롯은 통계가 늙어 사라지고
+    새 위치 슬롯이 쌓여 자동 적응. prune도 window로.
+
+    위치는 '묶는 키'(_assign), 선택은 '내용'(_score_persistent: 값다양성·순수도·높이·2곳일치).
+    """
+    mem = max(2, window)
+    slots = []
     per_frame, per_conf, boxes = {}, {}, []
-    prev = None                                                 # (cx, cy, mh) 이력 → 히스테리시스
+    prev = None
     for i in range(len(frames)):
-        lo = max(0, i - window + 1)
-        win = pre[lo:i + 1]; nwin = len(win)
-        agreed_local = {li: agreed[lo + li] for li in range(nwin)}
-        slots = _cluster(win, by_height, band, size_lo, size_hi)
-        scored = []
+        cands = preprocess_frame(frames[i], conf_thr)
+        agreed = within_frame_agreed(cands)
+        cur = {}                                                # id(slot) -> (value, conf, box)
+        for c in cands:
+            s = _assign(slots, c, by_height, band, size_lo, size_hi)
+            _update(s, c, i, agreed, mem)
+            key = id(s)
+            if key not in cur or c["conf"] > cur[key][1]:
+                cur[key] = (c["value"], c["conf"], c["box"])
+        slots = [s for s in slots if i - s["last"] < mem]       # 최근 window 안 보인 슬롯 제거(적응)
+        best, bsc = None, -1.0
         for s in slots:
-            if len(s["frames"]) < min(min_present, nwin):       # 안 묶이는(1회성) 후보 버림
-                continue
-            sc, present, distinct = _score(s, nwin, agreed_local)
-            if prev is not None:                                # 이력 슬롯이면 sticky(흔들림 억제)
-                if abs(s["cy"] - prev[1]) < band and abs(s["cx"] - prev[0]) < max(band, 0.15) \
-                   and (prev[2] <= 0 or size_lo <= s["mh"] / prev[2] <= size_hi):
-                    sc *= (1.0 + hysteresis)
-            scored.append((sc, s))
-        if not scored:
-            continue
-        scored.sort(key=lambda x: -x[0])
-        best = scored[0][1]
-        prev = (best["cx"], best["cy"], best["mh"])
-        cur = [c for li, c in best["items"] if li == nwin - 1]  # 현재(마지막) 프레임의 값
-        if cur:
-            c = max(cur, key=lambda x: x["conf"])
-            per_frame[ids[i]] = c["value"]; per_conf[ids[i]] = c["conf"]; boxes.append(c["box"])
+            if min(mem, i + 1) >= min_present and len({e[0] for e in s["recent"]}) < min_present:
+                continue                                        # 1회성 후보 버림
+            sc = _score_persistent(s, i, mem)
+            if prev is not None and abs(s["cy"] - prev[1]) < band and abs(s["cx"] - prev[0]) < max(band, 0.15):
+                sc *= (1.0 + hysteresis)                        # 이력 sticky(잔떨림만 억제, 적응은 유지)
+            if sc > bsc:
+                bsc, best = sc, s
+        if best is not None:
+            prev = (best["cx"], best["cy"], best["mh"])
+            key = id(best)
+            if key in cur:
+                v, conf, box = cur[key]
+                per_frame[ids[i]] = v; per_conf[ids[i]] = conf; boxes.append(box)
     if not boxes:
         return None
     box = [st.median([b[k] for b in boxes]) for k in range(4)]

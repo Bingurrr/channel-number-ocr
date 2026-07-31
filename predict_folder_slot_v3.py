@@ -30,7 +30,9 @@ def main():
     ap.add_argument("--symlink", action="store_true")
     ap.add_argument("--gt-from-filename", action="store_true")
     ap.add_argument("--min-conf", type=float, default=0.3)
-    ap.add_argument("--window", type=int, default=5, help="롤링 FIFO 크기(직전 N프레임). on-device")
+    ap.add_argument("--window", type=int, default=24,
+                    help="슬롯별 '최근 N프레임 통계' 유지(이미지 저장 X). 선택 신호↔위치변화적응 균형. "
+                         "20~30 권장(5는 신호 약함). on-device 메모리는 통계라 작음")
     ap.add_argument("--by-height", action="store_true",
                     help="위치 대신 높이+평행이동축으로 클러스터링(채널박스가 이동하는 UI)")
     ap.add_argument("--band", type=float, default=0.05, help="같은 행/열(또는 위치) 허용 반경")
@@ -72,7 +74,7 @@ def main():
     by_id = {im["image_id"]: im for im in json.loads((out / "full_ocr.json").read_text()).get("images", [])}
 
     # === v3 롤링 선택 ===
-    rows, report, pred_by_uid = [], [], {}
+    rows, report, pred_by_uid, per_folder = [], [], {}, {}
     for g, uids in sorted(seqs.items()):
         ok = [u for u in sorted(uids) if u in by_id]
         frames = [by_id[u] for u in ok]
@@ -81,18 +83,67 @@ def main():
         primary = V3.rolling_analyze(frames, ok, window=args.window, by_height=args.by_height,
                                      band=args.band, conf_thr=args.min_conf)
         pf = primary["per_frame"] if primary else {}
-        report.append({"folder": g, "channel_field_box": primary["box"] if primary else None,
+        box = primary["box"] if primary else None
+        report.append({"folder": g, "channel_field_box": box,
                        "distinct_values": primary["distinct"] if primary else 0,
                        "coverage": round(len(pf) / max(1, len(ok)), 3)})
+        per_folder[g] = (box, pf)
         for uid, v in sorted(pf.items()):
             rows.append({"folder": g, "frame": meta.get(uid, uid), "channel_number": v})
             pred_by_uid[uid] = v
-        print(f"  {g:<40} box={report[-1]['channel_field_box']} cov={report[-1]['coverage']}", flush=True)
+        print(f"  {g:<40} box={box} cov={report[-1]['coverage']}", flush=True)
 
     with (out / "per_frame.csv").open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=["folder", "frame", "channel_number"])
         w.writeheader(); w.writerows(rows)
     (out / "profile_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2))
+
+    # === 정성 이미지 (성공 샘플 N + 실패 전부, UI별) ===
+    if not args.no_qualitative:
+        try:
+            from PIL import Image, ImageDraw
+        except Exception:
+            Image = None
+        if Image is not None:
+            norm = lambda s: str(int(s)) if str(s).isdigit() else str(s)
+            saved = 0
+            for g, (box, pf) in per_folder.items():
+                if not box:
+                    continue
+                ib = [int(v) for v in box]
+                allu = [u for u in sorted(seqs.get(g, [])) if u in by_id]
+                oks, fails = [], []
+                for uid in allu:
+                    pred = P._dg(pf.get(uid, ""))
+                    if args.gt_from_filename:
+                        gt = P.gt_from_name(meta.get(uid, uid))
+                        isf = (not pred) or (gt and norm(pred) != norm(gt))
+                    else:
+                        isf = not pred
+                    (fails if isf else oks).append(uid)
+                step = max(1, len(oks) // max(1, args.samples_per_folder))
+                draw = [(u, False) for u in oks[::step][:args.samples_per_folder]] + [(u, True) for u in fails]
+                if not draw:
+                    continue
+                qd = out / "qualitative" / _safe(g, root); fdir = qd / "_failures"
+                qd.mkdir(parents=True, exist_ok=True)
+                if fails:
+                    fdir.mkdir(parents=True, exist_ok=True)
+                for uid, isf in draw:
+                    try:
+                        img = Image.open(by_id[uid].get("image_path")).convert("RGB")
+                    except Exception:
+                        continue
+                    d = ImageDraw.Draw(img); val = pf.get(uid, "") or "(none)"
+                    col = (255, 0, 0) if isf else (0, 200, 0)
+                    d.rectangle(ib, outline=col, width=3)
+                    lab = f"ch:{val}"
+                    if isf and args.gt_from_filename:
+                        lab += f" (gt:{P.gt_from_name(meta.get(uid, uid))})"
+                    d.text((ib[0], max(0, ib[1] - 14)), lab, fill=col)
+                    img.save((fdir if isf else qd) / f"{meta.get(uid, uid)}.jpg", quality=88)
+                    saved += 1
+            print(f"정성 이미지 {saved}장 (성공 샘플 + _failures/ 실패 전부)", flush=True)
 
     # === 정확도 ===
     if args.gt_from_filename:
