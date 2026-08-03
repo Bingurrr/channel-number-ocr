@@ -35,6 +35,12 @@ from predict_folder import gt_from_name
 from temporal_profile_select import classify, best_digit
 
 
+def gt_of(name):
+    """정답 채널: 'Ch012__...'(Airtel)→12, '002_6'(skylife)→맨앞숫자 둘 다 지원."""
+    m = re.match(r"(?i)\s*ch[\s_]*0*(\d+)", str(name))
+    return m.group(1) if m else gt_from_name(name)
+
+
 def _cn(v):
     s = str(v)
     return str(int(s)) if s.isdigit() else s
@@ -73,8 +79,8 @@ def main():
     fails, cats = [], Counter()
     n_gt = 0
     for uid, im in by_id.items():
-        frame = uid.split("__")[-1]                # 원본 파일명 stem 복원 (".__000"→"000")
-        gt = gt_from_name(frame)
+        frame = uid.split("__", 1)[1] if "__" in uid else uid   # 첫 그룹접두사만 제거(이름에 __있어도 안전)
+        gt = gt_of(frame)
         if not gt:
             continue
         n_gt += 1
