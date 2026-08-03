@@ -15,8 +15,18 @@ import os
 import shutil
 from pathlib import Path
 
+import re
+
 import predict_folder as P
 import slot_v3 as V3
+
+
+def gt_of(name):
+    """파일명에서 정답 채널 추출. 'Ch012__...'(Airtel) → 12, '002_6'(skylife) → 2 둘 다 지원."""
+    m = re.match(r"(?i)\s*ch[\s_]*0*(\d+)", str(name))     # 'Ch012' 접두사
+    if m:
+        return m.group(1)
+    return P.gt_from_name(name)                    # 폴백: 맨 앞 숫자
 
 
 def _safe(name, root):
@@ -119,7 +129,7 @@ def main():
                 for uid in allu:
                     pred = P._dg(pf.get(uid, ""))
                     if args.gt_from_filename:
-                        gt = P.gt_from_name(meta.get(uid, uid))
+                        gt = gt_of(meta.get(uid, uid))
                         isf = (not pred) or (gt and norm(pred) != norm(gt))
                     else:
                         isf = not pred
@@ -142,7 +152,7 @@ def main():
                     d.rectangle(ib, outline=col, width=3)
                     lab = f"ch:{val}"
                     if isf and args.gt_from_filename:
-                        lab += f" (gt:{P.gt_from_name(meta.get(uid, uid))})"
+                        lab += f" (gt:{gt_of(meta.get(uid, uid))})"
                     d.text((ib[0], max(0, ib[1] - 14)), lab, fill=col)
                     img.save((fdir if isf else qd) / f"{meta.get(uid, uid)}.jpg", quality=88)
                     saved += 1
@@ -163,7 +173,7 @@ def main():
                 oks, fails = [], []
                 for uid in allu:
                     pred = P._dg(pf.get(uid, ""))
-                    gt = P.gt_from_name(meta.get(uid, uid)) if args.gt_from_filename else None
+                    gt = gt_of(meta.get(uid, uid)) if args.gt_from_filename else None
                     isf = (not pred) or (gt and norm(pred) != norm(gt))
                     (fails if isf else oks).append(uid)
                 step = max(1, len(oks) // max(1, args.viz_steps))
@@ -186,7 +196,7 @@ def main():
                     for gb in gboxes:                                     # 채널 위치(노랑)
                         d.rectangle([int(x) for x in gb], outline=(255, 210, 0), width=2)
                     val = pf.get(uid, "") or "(none)"
-                    gt = P.gt_from_name(meta.get(uid, uid)) if args.gt_from_filename else None
+                    gt = gt_of(meta.get(uid, uid)) if args.gt_from_filename else None
                     col = (255, 40, 40) if isf else (0, 230, 0)
                     lab = f"CH={val}" + (f" gt={gt}" if isf and gt else "")
                     d.text((10, 10), lab, fill=col)
@@ -206,7 +216,7 @@ def main():
             for uid in uids:
                 if uid not in by_id:
                     continue
-                gt = P.gt_from_name(meta.get(uid, uid))
+                gt = gt_of(meta.get(uid, uid))
                 if not gt:
                     continue
                 t = per.setdefault(g, [0, 0, 0]); t[0] += 1
