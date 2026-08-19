@@ -4,7 +4,8 @@
 full OCR → slot_v3.rolling_analyze(롤링 FIFO + 박스분할 + 강한 선택) → per_frame.csv + 정확도.
 
 A: 숫자+텍스트 박스 분할 / B: 높이·2곳일치 중심 선택 / C: 롤링 큐(직전 N개) — 모두 slot_v3에.
-on-device 배포와 동일하게 --window N(직전 N프레임)만 사용. det는 순정, rec는 파인튜닝.
+on-device 배포와 동일하게 --window N(직전 N프레임)만 사용.
+det/rec 모두 --det-model-dir / --rec-model-dir 로 파인튜닝 가중치 지정 가능(미지정 시 순정).
 """
 from __future__ import annotations
 
@@ -47,6 +48,8 @@ def main():
                     help="위치 대신 높이+평행이동축으로 클러스터링(채널박스가 이동하는 UI)")
     ap.add_argument("--band", type=float, default=0.05, help="같은 행/열(또는 위치) 허용 반경")
     ap.add_argument("--rec-model-dir", default="models/full_image_ocr/en_PP-OCRv4_mobile_rec_ft")
+    ap.add_argument("--det-model-dir", default="",
+                    help="파인튜닝된 det inference 디렉토리 (지정 시 이 가중치로 영역검출, 미지정 시 순정 PP-OCRv4_mobile_det)")
     ap.add_argument("--keep-staged", action="store_true")
     ap.add_argument("--no-qualitative", action="store_true")
     ap.add_argument("--samples-per-folder", type=int, default=20)
@@ -81,6 +84,14 @@ def main():
         if (rdp / "inference.pdiparams").exists():
             ocr_cmd += ["--text-recognition-model-dir", str(rdp)]
             print(f"[v3] 파인튜닝 rec: {rdp}", flush=True)
+    dd = str(args.det_model_dir or "").strip()
+    if dd.lower() not in ("", "none"):
+        ddp = Path(dd)
+        if not ddp.is_absolute():
+            ddp = Path(__file__).resolve().parent / ddp
+        if (ddp / "inference.pdiparams").exists():
+            ocr_cmd += ["--text-detection-model-dir", str(ddp)]
+            print(f"[v3] 파인튜닝 det: {ddp}", flush=True)
     if P.sh(ocr_cmd, env) != 0:
         raise SystemExit("[v3] full OCR 실패")
     by_id = {im["image_id"]: im for im in json.loads((out / "full_ocr.json").read_text()).get("images", [])}

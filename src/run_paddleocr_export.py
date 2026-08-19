@@ -27,6 +27,8 @@ def main() -> None:
     parser.add_argument("--text-recognition-model-name", default=None)
     parser.add_argument("--text-recognition-model-dir", default=None,
                         help="파인튜닝된 rec inference 디렉토리 (지정 시 이 가중치로 읽음)")
+    parser.add_argument("--text-detection-model-dir", default=None,
+                        help="파인튜닝된 det inference 디렉토리 (지정 시 이 가중치로 영역검출)")
     parser.add_argument("--progress-every", type=int, default=10)
     args = parser.parse_args()
 
@@ -38,6 +40,7 @@ def main() -> None:
         text_detection_model_name=args.text_detection_model_name,
         text_recognition_model_name=args.text_recognition_model_name,
         text_recognition_model_dir=args.text_recognition_model_dir,
+        text_detection_model_dir=args.text_detection_model_dir,
     )
     images: List[Dict[str, Any]] = []
     started = time.time()
