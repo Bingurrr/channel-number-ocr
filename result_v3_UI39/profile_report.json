@@ -1,0 +1,13 @@
+[
+  {
+    "folder": ".",
+    "channel_field_box": [
+      39.0,
+      112.0,
+      122.0,
+      133.0
+    ],
+    "distinct_values": 100,
+    "coverage": 1.0
+  }
+]
