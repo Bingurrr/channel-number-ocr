@@ -118,12 +118,13 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
     mem = max(2, window)
     slots = []
     pre_all = []
+    need_img = bool(bg_weight or contrast_weight or sat_weight)   # 이미지 기반 항 켜졌을 때만 로드
     for i in range(len(frames)):
-        img = _load(frames[i].get("image_path"))
+        img = _load(frames[i].get("image_path")) if need_img else None
         cands = V3.preprocess_frame(frames[i], conf_thr)
         for c in cands:
-            c["bg"] = _sample_bg(img, c["box"])
-            c["con"] = _sample_contrast(img, c["box"])
+            c["bg"] = _sample_bg(img, c["box"]) if bg_weight else None
+            c["con"] = _sample_contrast(img, c["box"]) if contrast_weight else None
             c["sat"] = _sample_sat(img, c["box"]) if sat_weight else None
         pre_all.append(cands)
         agreed = V3.within_frame_agreed(cands)
