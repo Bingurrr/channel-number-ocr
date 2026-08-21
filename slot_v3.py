@@ -153,24 +153,28 @@ def _update(s, c, i, agreed, mem):
     s["mh"] = st.median([e[3] for e in r])
 
 
-def _score_persistent(s, i):
-    """(B) lifetime 통계로 선택 점수 — 가끔 뜨는 채널 위치도 살아남게."""
+def _score_persistent(s, i, use_div=True, use_cov=True, use_hcv=True, use_2loc=True):
+    """(B) lifetime 통계로 선택 점수 — 가끔 뜨는 채널 위치도 살아남게.
+    use_* = 각 핵심 항 on/off (ablation study용, 기본 전부 ON = 기존 동작)."""
     present = len(s["present"])
     if present == 0 or s["count"] == 0:
         return 0.0
     distinct = len(s["vals"])
-    base = (1.0 + 0.2 * distinct) if distinct >= 2 else 0.1     # 값 다양성 자격
+    if use_div:
+        base = (1.0 + 0.2 * distinct) if distinct >= 2 else 0.1  # 값 다양성 자격
+    else:
+        base = 1.0                                              # 값다양성 항 제거
     purity = s["psum"] / s["count"]
     hs = [e[3] for e in s["recent"]]
     h_cv = (st.pstdev(hs) / (sum(hs) / len(hs))) if len(hs) > 1 and sum(hs) > 0 else 0.0
-    cov = present / max(1, i + 1)                              # lifetime 커버리지
+    cov = (present / max(1, i + 1)) if use_cov else 1.0        # lifetime 커버리지(빈도수)
     score = cov * base * (0.9 + 0.1 * purity)                  # purity 거의 중립(방송사명 붙은 채널 안 깎음)
-    if h_cv > 0.30:
+    if use_hcv and h_cv > 0.30:                                # 크기 변동 penalty
         score *= 0.4
     aspect = s["asum"] / s["count"]
     if not (0.2 <= aspect <= 8.0):
         score *= 0.2
-    if s["twoloc"] > 0:                                        # 2곳 일치 = 채널 강한 신호
+    if use_2loc and s["twoloc"] > 0:                           # 2곳 일치 = 채널 강한 신호
         score *= (1.0 + 0.6 * min(s["twoloc"], 6))
     return score
 

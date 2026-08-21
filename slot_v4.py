@@ -112,7 +112,8 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
                     hysteresis=0.2, bg_window=5, bg_weight=0.3, bg_thresh=12.0,
                     contrast_weight=0.2, contrast_thresh=25.0,
                     size_weight=0.4, size_ratio=1.3, global_weight=0.5,
-                    sat_weight=0.0, sat_thresh=0.18, sat_ratio=1.4):
+                    sat_weight=0.0, sat_thresh=0.18, sat_ratio=1.4,
+                    div_on=True, cov_on=True, hcv_on=True, tl_on=True):
     """v3와 동일하되, top1/top2가 근소할 때만(tie-break) 약한 시각 힌트 2종을 더한다:
        ① bg 하이라이트(현재 행이 배경색이 튀나)  ② 텍스트-배경 대비도(선명한가)."""
     mem = max(2, window)
@@ -180,7 +181,8 @@ def rolling_analyze(frames, ids, window=24, by_height=False, band=0.05,
         v = max(s["vals"], key=lambda x: s["vals"][x])
         return len("".join(ch for ch in str(v) if ch.isdigit()))
 
-    primary = {id(s): V3._score_persistent(s, n - 1) for s in elig}
+    primary = {id(s): V3._score_persistent(s, n - 1, use_div=div_on, use_cov=cov_on,
+                                            use_hcv=hcv_on, use_2loc=tl_on) for s in elig}
     top_score = max(primary.values())
     # tie-break 대상 = 점수가 top과 근소(15%내)한 '멀티자리' 후보들 = 진짜 애매한 채널행들
     contenders = [s for s in elig if rep_digits(s) >= 2 and primary[id(s)] >= 0.85 * (top_score + 1e-9)]

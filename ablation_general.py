@@ -58,12 +58,17 @@ def configs(base):
         ("v3 + 대비",             {**V3W, "contrast_weight": 0.2}),
         ("v3 + 전역현저성",         {**V3W, "global_weight": 0.5}),
         ("v3 + 채도",             {**V3W, "sat_weight": 0.35}),
-        # ── 전부 + leave-one-out: 각 항 필요성 ──
+        # ── 전부 + leave-one-out: 시각항 필요성 ──
         ("v4  (전부 ON)",         dict(base)),
         ("v4 − 크기",             {**base, "size_weight": 0}),
         ("v4 − 배경하이라이트",      {**base, "bg_weight": 0}),
         ("v4 − 대비",             {**base, "contrast_weight": 0}),
         ("v4 − 전역현저성",         {**base, "global_weight": 0}),
+        # ── 핵심(v3) 항 leave-one-out: 빈도수/값다양성/크기변동/2곳일치 ──
+        ("v4 − 값다양성",          {**base, "div_on": False}),
+        ("v4 − 빈도수",           {**base, "cov_on": False}),
+        ("v4 − 크기변동penalty",   {**base, "hcv_on": False}),
+        ("v4 − 2곳일치",          {**base, "tl_on": False}),
     ]
 
 
@@ -122,10 +127,14 @@ def main():
     for label, key in [("크기", "v3 + 크기"), ("배경하이라이트", "v3 + 배경하이라이트"),
                        ("대비", "v3 + 대비"), ("전역현저성", "v3 + 전역현저성"), ("채도", "v3 + 채도")]:
         print(f"  {label:<12}: {acc(res[key][1])-v3a:+.1f}%p")
-    print("② 필요성 (v4 − 그 항 → v4에서 하락폭):")
+    print("② 시각항 필요성 (v4 − 그 항 → v4에서 하락폭):")
     for label, key in [("크기", "v4 − 크기"), ("배경하이라이트", "v4 − 배경하이라이트"),
                        ("대비", "v4 − 대비"), ("전역현저성", "v4 − 전역현저성")]:
         print(f"  {label:<12}: {v4a-acc(res[key][1]):+.1f}%p")
+    print("③ 핵심(v3)항 필요성 (v4 − 그 항 → 하락폭, 클수록 필수):")
+    for label, key in [("값다양성", "v4 − 값다양성"), ("빈도수", "v4 − 빈도수"),
+                       ("크기변동penalty", "v4 − 크기변동penalty"), ("2곳일치", "v4 − 2곳일치")]:
+        print(f"  {label:<14}: {v4a-acc(res[key][1]):+.1f}%p")
 
     # 그룹별 CSV
     uis = sorted(res["v4  (전부 ON)"][0])
