@@ -180,6 +180,85 @@ def print_table(title, per, width=52):
     return tot, rdn, co
 
 
+def resolve_image(im, stem, image_root):
+    """staged 경로가 지워졌으면 --image-root 아래에서 stem 으로 찾는다."""
+    p = Path(im.get("image_path") or "")
+    if p.exists():
+        return p
+    if not image_root:
+        return None
+    for ext in (".jpg", ".jpeg", ".png", ".bmp", ".JPG", ".PNG"):
+        c = list(Path(image_root).rglob(f"{stem}{ext}"))
+        if c:
+            return c[0]
+    return None
+
+
+def draw_ablation(out, seqs, meta, by_id, preds, args):
+    """스텝별 답이 갈린 프레임을 한 장에 모아 그린다.
+    파랑=OCR 후보 / 좌상단에 gt 와 S0~S3 각각의 답(맞으면 초록, 틀리면 빨강)."""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        print("[viz] PIL 없음 → 시각화 생략", flush=True)
+        return
+    norm = lambda x: str(int(x)) if str(x).isdigit() else str(x)
+    keys = [k for k, _ in STEPS]
+    n_diff = n_same = miss = 0
+    for g, uids in sorted(seqs.items()):
+        ok = [u for u in sorted(uids) if u in by_id]
+        diff, same = [], []
+        for uid in ok:
+            gt = gt_of(meta.get(uid, uid))
+            vals = [P._dg(preds[k].get(uid, "")) for k in keys]
+            if len(set(vals)) > 1:
+                diff.append(uid)
+            elif gt and vals[0] and norm(vals[0]) == norm(gt):
+                same.append(uid)
+        pick = ([(u, True) for u in diff[:args.viz_steps]]
+                + [(u, False) for u in same[::max(1, len(same) // max(1, args.samples_per_folder))]
+                   [:args.samples_per_folder]])
+        if not pick:
+            continue
+        base = out / "ablation_viz" / g.replace("/", "__").replace(" ", "_")
+        dd = base / "_disagree"
+        for uid, isd in pick:
+            stem = meta.get(uid, uid)
+            src = resolve_image(by_id[uid], stem, args.image_root)
+            if src is None:
+                miss += 1
+                continue
+            try:
+                img = Image.open(src).convert("RGB")
+            except Exception:
+                miss += 1
+                continue
+            d = ImageDraw.Draw(img)
+            for c in V3.preprocess_frame(by_id[uid], args.min_conf):
+                b = [int(x) for x in c["box"]]
+                d.rectangle(b, outline=(60, 120, 255), width=1)
+                d.text((b[0], max(0, b[1] - 11)), c["value"], fill=(90, 160, 255))
+            gt = gt_of(stem)
+            d.text((10, 8), f"gt={gt}", fill=(255, 255, 0))
+            for j, k in enumerate(keys):
+                v = P._dg(preds[k].get(uid, "")) or "(none)"
+                good = bool(gt) and v != "(none)" and norm(v) == norm(gt)
+                d.text((10, 24 + j * 14), f"{k}={v}",
+                       fill=(0, 230, 0) if good else (255, 60, 60))
+            tgt = dd if isd else base
+            tgt.mkdir(parents=True, exist_ok=True)
+            img.save(tgt / f"{stem}.jpg", quality=88)
+            if isd:
+                n_diff += 1
+            else:
+                n_same += 1
+    print(f"[viz] 스텝 불일치 {n_diff}장 → {out}/ablation_viz/*/_disagree/, "
+          f"전체일치 {n_same}장", flush=True)
+    if miss:
+        print(f"[viz] 원본 이미지를 못 찾아 건너뜀 {miss}장 "
+              f"(--image-root 로 원본 루트를 지정하세요)", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     src = ap.add_mutually_exclusive_group(required=True)
@@ -195,6 +274,15 @@ def main():
     ap.add_argument("--det-model-dir", default="")
     ap.add_argument("--keep-staged", action="store_true")
     ap.add_argument("--width", type=int, default=52, help="폴더명 열 너비")
+    ap.add_argument("--gt-from-filename", action="store_true",
+                    help="파일명=정답 (ablation은 정확도 비교가 목적이라 항상 적용됨. "
+                         "v3와 명령어 호환을 위해 받아만 둠)")
+    ap.add_argument("--viz-steps", type=int, default=0, metavar="N",
+                    help="폴더당 N장: 스텝 사이에서 답이 갈린 프레임을 S0~S3 나란히 표시")
+    ap.add_argument("--samples-per-folder", type=int, default=0, metavar="N",
+                    help="폴더당 N장: 전 스텝이 일치+정답인 프레임 (정상 동작 확인용)")
+    ap.add_argument("--image-root", default="",
+                    help="원본 이미지 루트. --from-result 로 staged 이미지가 지워졌을 때 지정")
     args = ap.parse_args()
 
     out = Path(args.out).resolve()
@@ -252,6 +340,15 @@ def main():
         preds["S3"].update(pf)
 
     # ── 집계 + 출력 ──
+    n_gt = sum(1 for g, us in seqs.items() for u in us
+               if u in by_id and gt_of(meta.get(u, u)))
+    if n_gt == 0:
+        raise SystemExit(
+            "파일명에서 정답 채널을 하나도 못 뽑았습니다. ablation 은 정확도 비교가 목적이라 "
+            "GT 없이는 의미가 없습니다. 파일명이 'Ch012__...' 또는 '002_6' 형식인지 확인하세요.")
+    if n_gt < sum(len(v) for v in seqs.values()) * 0.5:
+        print(f"[주의] GT를 뽑은 프레임이 {n_gt}장뿐입니다 — 파일명 형식을 확인하세요.", flush=True)
+
     results, summary = {}, {}
     for key, label in STEPS:
         per = tally(seqs, meta, preds[key], by_id)
@@ -290,6 +387,9 @@ def main():
                     continue
                 w.writerow([g, meta.get(uid, uid), gt_of(meta.get(uid, uid)) or ""]
                            + [preds[k].get(uid, "") for k, _ in STEPS])
+
+    if args.viz_steps > 0 or args.samples_per_folder > 0:
+        draw_ablation(out, seqs, meta, by_id, preds, args)
 
     print(f"\n결과: {out}/ablation_summary.csv, ablation_per_frame.csv", flush=True)
     if args.root and not args.keep_staged:
